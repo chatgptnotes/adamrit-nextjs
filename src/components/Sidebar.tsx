@@ -4,7 +4,8 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Users, Bed, ClipboardList, Receipt,
-  FileText, BarChart3, Pill, TestTube
+  FileText, BarChart3, Pill, TestTube, Stethoscope, Syringe,
+  BookOpen, Wallet, Building2
 } from 'lucide-react'
 
 const nav = [
@@ -14,9 +15,13 @@ const nav = [
   { href: '/opd', label: 'OPD', icon: ClipboardList },
   { href: '/billing', label: 'Billing', icon: Receipt },
   { href: '/discharge', label: 'Discharge', icon: FileText },
-  { href: '/reports', label: 'Reports', icon: BarChart3 },
+  { href: '/doctors', label: 'Doctors', icon: Stethoscope },
+  { href: '/surgeries', label: 'Surgeries', icon: Syringe },
   { href: '/pharmacy', label: 'Pharmacy', icon: Pill },
   { href: '/lab', label: 'Lab', icon: TestTube },
+  { href: '/accounting', label: 'Accounting', icon: Wallet },
+  { href: '/infrastructure', label: 'Infrastructure', icon: Building2 },
+  { href: '/reports', label: 'Reports', icon: BarChart3 },
 ]
 
 export default function Sidebar() {
