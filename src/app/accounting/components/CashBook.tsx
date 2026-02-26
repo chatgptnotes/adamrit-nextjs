@@ -2,285 +2,164 @@
 import { useState, useEffect } from 'react'
 import { supabaseProd } from '@/lib/supabase-prod'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import DataTable from '@/components/DataTable'
-import { BookOpen, Calendar, ArrowUpCircle, ArrowDownCircle, DollarSign } from 'lucide-react'
+import { BookOpen, Calendar } from 'lucide-react'
+
+interface Transaction {
+  id: string
+  type: string
+  description: string
+  receipt: number
+  payment: number
+  balance: number
+  time: string
+  voucher_no: string
+}
 
 export default function CashBook() {
-  const [transactions, setTransactions] = useState<any[]>([])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
-  const [selectedLocation, setSelectedLocation] = useState<number>(1)
-  const [summary, setSummary] = useState({
-    openingBalance: 0,
-    totalReceipts: 0,
-    totalPayments: 0,
-    closingBalance: 0
-  })
+  const [summary, setSummary] = useState({ openingBalance: 0, totalReceipts: 0, totalPayments: 0, closingBalance: 0 })
 
-  useEffect(() => {
-    fetchCashBookData()
-  }, [selectedDate, selectedLocation])
+  useEffect(() => { fetchData() }, [selectedDate])
 
-  const fetchCashBookData = async () => {
+  async function fetchData() {
     setLoading(true)
     try {
-      // Fetch cash receipts for the selected date and location
       const { data: receipts } = await supabaseProd
         .from('account_receipts')
         .select('*')
-        .eq('location_id', selectedLocation)
-        .eq('payment_mode', 'Cash')
         .gte('date', selectedDate)
-        .lt('date', new Date(new Date(selectedDate).getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0])
-        .order('date', { ascending: true })
+        .lte('date', selectedDate + 'T23:59:59')
 
-      // Fetch cash payments (voucher entries with cash account)
-      const { data: payments } = await supabaseProd
+      const { data: entries } = await supabaseProd
         .from('voucher_entries')
-        .select(`
-          *,
-          vouchers (
-            voucher_number,
-            date,
-            narration,
-            location_id,
-            voucher_type
-          )
-        `)
-        .order('created_at', { ascending: true })
+        .select('*, vouchers(*)')
+        .gte('created_at', selectedDate)
+        .lte('created_at', selectedDate + 'T23:59:59')
+        .gt('debit', 0)
 
-      // Filter payments by location and date, and only cash-related transactions
-      const cashPayments = payments?.filter(p => 
-        p.vouchers?.location_id === selectedLocation &&
-        p.vouchers?.date === selectedDate &&
-        (p.vouchers?.voucher_type === 'Payment' || p.vouchers?.voucher_type === 'Contra') &&
-        p.debit > 0  // Cash going out
-      ) || []
-
-      // Calculate opening balance (simplified - you might want to implement proper opening balance calculation)
-      const openingBalance = 50000 // This would be calculated from previous day's closing or from a separate table
-
-      // Calculate totals
-      const totalReceipts = receipts?.reduce((sum, r) => sum + (r.amount || 0), 0) || 0
-      const totalPayments = cashPayments.reduce((sum, p) => sum + (p.debit || 0), 0)
+      const openingBalance = 50000
+      const totalReceipts = (receipts || []).reduce((sum: number, r: any) => sum + (r.amount || 0), 0)
+      const cashPayments = (entries || []).filter((e: any) => e.debit > 0)
+      const totalPayments = cashPayments.reduce((sum: number, p: any) => sum + (p.debit || 0), 0)
       const closingBalance = openingBalance + totalReceipts - totalPayments
 
-      // Combine and format transactions
-      const allTransactions = [
-        // Opening balance entry
-        {
-          id: 'opening',
-          type: 'Opening Balance',
-          description: 'Cash in hand - opening balance',
-          receipt: openingBalance,
-          payment: 0,
-          balance: openingBalance,
-          time: '00:00',
-          voucher_no: 'OB'
-        },
-        // Cash receipts
-        ...receipts?.map((r, index) => ({
-          id: `receipt-${r.id}`,
-          type: 'Receipt',
-          description: `Receipt from Patient ID: ${r.patient_id || 'N/A'}`,
-          receipt: r.amount,
-          payment: 0,
-          balance: openingBalance + receipts.slice(0, index + 1).reduce((sum, rec) => sum + (rec.amount || 0), 0) - totalPayments,
-          time: new Date(r.date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-          voucher_no: r.receipt_no || `R-${r.id}`,
-          reference: r
-        })) || [],
-        // Cash payments
-        ...cashPayments.map((p, index) => ({
-          id: `payment-${p.id}`,
-          type: 'Payment',
-          description: p.vouchers?.narration || 'Cash payment',
-          receipt: 0,
-          payment: p.debit,
-          balance: openingBalance + totalReceipts - cashPayments.slice(0, index + 1).reduce((sum, pay) => sum + (pay.debit || 0), 0),
-          time: new Date(p.vouchers?.date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-          voucher_no: p.vouchers?.voucher_number || `V-${p.id}`,
-          reference: p
-        }))
+      const rows: Transaction[] = [
+        { id: 'opening', type: 'Opening Balance', description: 'Cash in hand', receipt: openingBalance, payment: 0, balance: openingBalance, time: '00:00', voucher_no: 'OB' }
       ]
 
-      // Sort by time
-      allTransactions.sort((a, b) => {
-        if (a.id === 'opening') return -1
-        if (b.id === 'opening') return 1
-        return a.time.localeCompare(b.time)
-      })
+      let runBal = openingBalance
+      for (const r of (receipts || [])) {
+        runBal += (r.amount || 0)
+        rows.push({
+          id: 'r-' + r.id,
+          type: 'Receipt',
+          description: 'Receipt - Patient ' + (r.patient_id || 'N/A'),
+          receipt: r.amount || 0,
+          payment: 0,
+          balance: runBal,
+          time: r.date ? new Date(r.date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '',
+          voucher_no: r.receipt_no || ('R-' + r.id)
+        })
+      }
+      for (const p of cashPayments) {
+        runBal -= (p.debit || 0)
+        rows.push({
+          id: 'p-' + p.id,
+          type: 'Payment',
+          description: (p.vouchers && p.vouchers.narration) || 'Cash payment',
+          receipt: 0,
+          payment: p.debit || 0,
+          balance: runBal,
+          time: (p.vouchers && p.vouchers.date) ? new Date(p.vouchers.date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '',
+          voucher_no: (p.vouchers && p.vouchers.voucher_number) || ('V-' + p.id)
+        })
+      }
 
-      setTransactions(allTransactions)
-      setSummary({
-        openingBalance,
-        totalReceipts,
-        totalPayments,
-        closingBalance
-      })
+      setTransactions(rows)
+      setSummary({ openingBalance, totalReceipts, totalPayments, closingBalance })
     } catch (error) {
-      console.error('Error fetching cash book data:', error)
+      console.error('Error fetching cash book:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const columns = [
-    { 
-      key: 'voucher_no', 
-      label: 'Voucher #',
-      render: (r: any) => <span className="font-mono text-sm">{r.voucher_no}</span>
-    },
-    { 
-      key: 'time', 
-      label: 'Time',
-      render: (r: any) => <span className="text-sm text-gray-600">{r.time}</span>
-    },
-    { 
-      key: 'type', 
-      label: 'Type',
-      render: (r: any) => (
-        <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-          r.type === 'Opening Balance' ? 'bg-blue-100 text-blue-700' :
-          r.type === 'Receipt' ? 'bg-green-100 text-green-700' :
-          'bg-red-100 text-red-700'
-        }`}>
-          {r.type}
-        </span>
-      )
-    },
-    { 
-      key: 'description', 
-      label: 'Description',
-      render: (r: any) => <span className="text-sm max-w-[300px] truncate block">{r.description}</span>
-    },
-    { 
-      key: 'receipt', 
-      label: 'Receipt',
-      render: (r: any) => r.receipt > 0 ? 
-        <span className="text-green-600 font-medium">{formatCurrency(r.receipt)}</span> : '—'
-    },
-    { 
-      key: 'payment', 
-      label: 'Payment',
-      render: (r: any) => r.payment > 0 ? 
-        <span className="text-red-600 font-medium">{formatCurrency(r.payment)}</span> : '—'
-    },
-    { 
-      key: 'balance', 
-      label: 'Balance',
-      render: (r: any) => <span className="font-semibold">{formatCurrency(r.balance)}</span>
-    }
-  ]
-
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="p-2.5 bg-blue-50 rounded-lg text-blue-600">
-          <BookOpen className="w-5 h-5" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Cash Book</h2>
-          <p className="text-sm text-gray-500">Daily cash book with opening/closing balance</p>
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 bg-white p-4 rounded-lg border border-gray-200">
-        <div className="flex items-center gap-2">
-          <Calendar className="w-4 h-4 text-gray-500" />
-          <label className="text-sm font-medium text-gray-700">Date:</label>
-          <input 
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-blue-50 rounded-lg text-blue-600">
+            <BookOpen className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">Cash Book</h2>
+            <p className="text-sm text-gray-500">Daily cash transactions</p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-sm font-medium text-gray-700">Location:</label>
-          <select 
-            value={selectedLocation} 
-            onChange={(e) => setSelectedLocation(Number(e.target.value))}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value={1}>Hope Hospital</option>
-            <option value={2}>Ayushman Hospital</option>
-          </select>
+          <Calendar className="w-4 h-4 text-gray-400" />
+          <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500" />
         </div>
-        <button
-          onClick={fetchCashBookData}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          Refresh
-        </button>
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-          <div className="flex items-center gap-2 mb-2">
-            <DollarSign className="w-4 h-4 text-blue-600" />
-            <span className="text-sm font-medium text-blue-700">Opening Balance</span>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'Opening Balance', value: summary.openingBalance, color: 'blue' },
+          { label: 'Total Receipts', value: summary.totalReceipts, color: 'green' },
+          { label: 'Total Payments', value: summary.totalPayments, color: 'red' },
+          { label: 'Closing Balance', value: summary.closingBalance, color: 'purple' },
+        ].map(card => (
+          <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-4">
+            <p className="text-xs text-gray-500 uppercase tracking-wide">{card.label}</p>
+            <p className="text-xl font-bold text-gray-900 mt-1">{formatCurrency(card.value)}</p>
           </div>
-          <span className="text-lg font-semibold text-blue-900">
-            {formatCurrency(summary.openingBalance)}
-          </span>
-        </div>
-        <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-          <div className="flex items-center gap-2 mb-2">
-            <ArrowDownCircle className="w-4 h-4 text-green-600" />
-            <span className="text-sm font-medium text-green-700">Total Receipts</span>
-          </div>
-          <span className="text-lg font-semibold text-green-900">
-            {formatCurrency(summary.totalReceipts)}
-          </span>
-        </div>
-        <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-          <div className="flex items-center gap-2 mb-2">
-            <ArrowUpCircle className="w-4 h-4 text-red-600" />
-            <span className="text-sm font-medium text-red-700">Total Payments</span>
-          </span>
-          <span className="text-lg font-semibold text-red-900">
-            {formatCurrency(summary.totalPayments)}
-          </span>
-        </div>
-        <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
-          <div className="flex items-center gap-2 mb-2">
-            <DollarSign className="w-4 h-4 text-purple-600" />
-            <span className="text-sm font-medium text-purple-700">Closing Balance</span>
-          </div>
-          <span className="text-lg font-semibold text-purple-900">
-            {formatCurrency(summary.closingBalance)}
-          </span>
-        </div>
+        ))}
       </div>
 
-      {/* Cash Book Table */}
-      <div className="bg-white rounded-xl border border-gray-200">
-        <div className="p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Cash Book for {formatDate(selectedDate)} - {selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}
-          </h3>
-          <DataTable 
-            data={transactions}
-            columns={columns}
-            loading={loading}
-            searchPlaceholder="Search transactions..."
-            searchKey="description"
-          />
+      {/* Transactions Table */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Voucher #</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Time</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Type</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Description</th>
+                <th className="px-4 py-3 text-right font-medium text-gray-600">Receipt</th>
+                <th className="px-4 py-3 text-right font-medium text-gray-600">Payment</th>
+                <th className="px-4 py-3 text-right font-medium text-gray-600">Balance</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {loading ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Loading...</td></tr>
+              ) : transactions.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No transactions for this date</td></tr>
+              ) : transactions.map(t => (
+                <tr key={t.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-mono text-xs">{t.voucher_no}</td>
+                  <td className="px-4 py-3 text-gray-600">{t.time}</td>
+                  <td className="px-4 py-3">
+                    <span className={
+                      t.type === 'Opening Balance' ? 'px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700' :
+                      t.type === 'Receipt' ? 'px-2 py-1 text-xs rounded-full bg-green-100 text-green-700' :
+                      'px-2 py-1 text-xs rounded-full bg-red-100 text-red-700'
+                    }>{t.type}</span>
+                  </td>
+                  <td className="px-4 py-3 max-w-[300px] truncate">{t.description}</td>
+                  <td className="px-4 py-3 text-right text-green-600 font-medium">{t.receipt > 0 ? formatCurrency(t.receipt) : '—'}</td>
+                  <td className="px-4 py-3 text-right text-red-600 font-medium">{t.payment > 0 ? formatCurrency(t.payment) : '—'}</td>
+                  <td className="px-4 py-3 text-right font-semibold">{formatCurrency(t.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      </div>
-
-      {/* Print Button */}
-      <div className="flex justify-end">
-        <button
-          onClick={() => window.print()}
-          className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors"
-        >
-          Print Cash Book
-        </button>
       </div>
     </div>
   )

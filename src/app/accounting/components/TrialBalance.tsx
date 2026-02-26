@@ -419,7 +419,7 @@ export default function TrialBalance() {
         <p className="text-sm text-blue-700">
           Trial Balance is a statement that shows the total of debit and credit balances of all accounts in the ledger. 
           It helps verify that the total of all debit balances equals the total of all credit balances, ensuring the 
-          accuracy of the double-entry bookkeeping system. If they don't match, there might be an error in the entries.
+          accuracy of the double-entry bookkeeping system. If they do not match, there might be an error in the entries.
         </p>
       </div>
     </div>

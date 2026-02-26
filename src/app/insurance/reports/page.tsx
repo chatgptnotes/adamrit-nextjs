@@ -36,9 +36,9 @@ export default function ReportsPage() {
   })
 
   // Get unique payers
-  const payers = [...new Set(allData.map(item => 
+  const payers = [...Array.from(new Set(allData.map(item => 
     item.payer_name || item.insurance_type || item.corporate_client || 'Unknown'
-  ))].filter(Boolean)
+  )))].filter(Boolean)
 
   // Report generation functions
   const generateCorporateReport = () => {

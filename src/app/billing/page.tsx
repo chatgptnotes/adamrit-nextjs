@@ -130,7 +130,7 @@ export default function BillingDashboard() {
               {Object.entries(stats.departments).map(([dept, revenue]) => (
                 <div key={dept} className="flex justify-between items-center">
                   <span className="font-medium text-gray-700">{dept}</span>
-                  <span className="font-bold text-gray-900">{formatCurrency(revenue)}</span>
+                  <span className="font-bold text-gray-900">{formatCurrency(revenue as number)}</span>
                 </div>
               ))}
             </div>
@@ -143,7 +143,7 @@ export default function BillingDashboard() {
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <button className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-center">
-                <Stethoscope className="w-6 h-6 mx-auto mb-2 text-blue-600" />
+                <Receipt className="w-6 h-6 mx-auto mb-2 text-blue-600" />
                 <div className="text-sm font-medium">New OPD Bill</div>
               </button>
               <button className="p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors text-center">

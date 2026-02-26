@@ -131,7 +131,7 @@ export default function PendingBillsPage() {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600">Overdue (>30 days)</p>
+              <p className="text-sm text-gray-600">Overdue (&gt;30 days)</p>
               <p className="text-2xl font-bold text-orange-600">
                 {summary.ageBuckets['31-90'].length + summary.ageBuckets['90+'].length}
               </p>
@@ -143,7 +143,7 @@ export default function PendingBillsPage() {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600">Critical (>90 days)</p>
+              <p className="text-sm text-gray-600">Critical (&gt;90 days)</p>
               <p className="text-2xl font-bold text-red-700">{summary.ageBuckets['90+'].length}</p>
             </div>
             <Calendar className="w-8 h-8 text-red-700" />
