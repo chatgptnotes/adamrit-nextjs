@@ -1,101 +1,55 @@
-import Image from "next/image";
+'use client'
+import { useDashboardStats } from '@/hooks/useSupabase'
+import { formatCurrency } from '@/lib/utils'
+import StatCard from '@/components/StatCard'
+import { Users, Bed, CalendarDays, Receipt, IndianRupee, FileCheck } from 'lucide-react'
 
-export default function Home() {
+export default function Dashboard() {
+  const { stats, loading } = useDashboardStats()
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <p className="text-sm text-gray-500 mt-1">Welcome to Adamrit HMS — Hope Hospital, Nagpur</p>
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+        <StatCard title="Total Patients" value={loading ? '...' : stats.patients} icon={Users} color="blue" subtitle="All registered" />
+        <StatCard title="Currently Admitted" value={loading ? '...' : stats.admitted} icon={Bed} color="green" subtitle="IPD patients" />
+        <StatCard title="Appointments" value={loading ? '...' : stats.appointments} icon={CalendarDays} color="purple" subtitle="Total booked" />
+        <StatCard title="Total Bills" value={loading ? '...' : stats.billings} icon={Receipt} color="orange" subtitle="Generated" />
+        <StatCard title="Revenue" value={loading ? '...' : formatCurrency(stats.revenue)} icon={IndianRupee} color="green" subtitle="Total billed" />
+        <StatCard title="Discharged" value={loading ? '...' : stats.discharged} icon={FileCheck} color="red" subtitle="Summaries" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="font-semibold text-gray-900 mb-4">Quick Actions</h3>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { href: '/patients', label: 'View Patients', color: 'bg-blue-500' },
+              { href: '/ipd', label: 'IPD Dashboard', color: 'bg-emerald-500' },
+              { href: '/billing', label: 'Billing', color: 'bg-orange-500' },
+              { href: '/reports', label: 'Reports', color: 'bg-purple-500' },
+            ].map(a => (
+              <a key={a.href} href={a.href} className={`${a.color} text-white rounded-lg px-4 py-3 text-sm font-medium hover:opacity-90 transition-opacity text-center`}>
+                {a.label}
+              </a>
+            ))}
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="font-semibold text-gray-900 mb-4">System Info</h3>
+          <dl className="space-y-3 text-sm">
+            <div className="flex justify-between"><dt className="text-gray-500">Platform</dt><dd className="font-medium">Next.js 14 + Supabase</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Database</dt><dd className="font-medium">PostgreSQL (Supabase)</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Hospital</dt><dd className="font-medium">Hope Hospital, Nagpur</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Data Source</dt><dd className="font-medium">Migrated from CakePHP</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Records</dt><dd className="font-medium">236 patients, 1466 bills</dd></div>
+          </dl>
+        </div>
+      </div>
     </div>
-  );
+  )
 }
