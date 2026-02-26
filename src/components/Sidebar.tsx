@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Users, Bed, ClipboardList, Receipt,
   FileText, BarChart3, Pill, TestTube, Stethoscope, Syringe,
-  BookOpen, Wallet, Building2
+  BookOpen, Wallet, Building2, Shield
 } from 'lucide-react'
 
 const nav = [
@@ -14,6 +14,7 @@ const nav = [
   { href: '/ipd', label: 'IPD', icon: Bed },
   { href: '/opd', label: 'OPD', icon: ClipboardList },
   { href: '/billing', label: 'Billing', icon: Receipt },
+  { href: '/insurance', label: 'Insurance/ESIC', icon: Shield },
   { href: '/discharge', label: 'Discharge', icon: FileText },
   { href: '/doctors', label: 'Doctors', icon: Stethoscope },
   { href: '/surgeries', label: 'Surgeries', icon: Syringe },

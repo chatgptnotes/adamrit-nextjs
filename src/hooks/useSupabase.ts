@@ -75,6 +75,19 @@ export function useWards() {
   return useQuery<any>('wards', { order: { col: 'name', asc: true } })
 }
 
+// Insurance hooks
+export function useInsuranceClaims() {
+  return useQuery<any>('insurance_claims', { order: { col: 'created_at', asc: false }, limit: 500 })
+}
+
+export function useCorporateBills() {
+  return useQuery<any>('corporate_bills', { order: { col: 'created_at', asc: false }, limit: 500 })
+}
+
+export function useInsuranceProviders() {
+  return useQuery<any>('insurance_providers', { order: { col: 'name', asc: true } })
+}
+
 export function useDashboardStats() {
   const [stats, setStats] = useState({ patients: 0, admitted: 0, appointments: 0, billings: 0, revenue: 0, discharged: 0, doctors: 0, surgeries: 0, labOrders: 0, pharmacyItems: 0 })
   const [loading, setLoading] = useState(true)
@@ -108,6 +121,53 @@ export function useDashboardStats() {
         labOrders: l.count || 0,
         pharmacyItems: ph.count || 0,
       })
+      setLoading(false)
+    }
+    fetch()
+  }, [])
+
+  return { stats, loading }
+}
+
+export function useInsuranceStats() {
+  const [stats, setStats] = useState({ 
+    totalClaims: 0, 
+    pendingClaims: 0, 
+    approvedClaims: 0, 
+    rejectedClaims: 0,
+    totalClaimAmount: 0,
+    receivedAmount: 0,
+    outstandingAmount: 0
+  })
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function fetch() {
+      // Try to fetch from insurance claims table, handle gracefully if it doesn't exist
+      try {
+        const { data: claims } = await supabase.from('insurance_claims').select('*')
+        if (claims) {
+          const total = claims.length
+          const pending = claims.filter(c => c.status === 'pending').length
+          const approved = claims.filter(c => c.status === 'approved').length
+          const rejected = claims.filter(c => c.status === 'rejected').length
+          const totalAmount = claims.reduce((sum, c) => sum + (c.claim_amount || 0), 0)
+          const received = claims.reduce((sum, c) => sum + (c.received_amount || 0), 0)
+          
+          setStats({
+            totalClaims: total,
+            pendingClaims: pending,
+            approvedClaims: approved,
+            rejectedClaims: rejected,
+            totalClaimAmount: totalAmount,
+            receivedAmount: received,
+            outstandingAmount: totalAmount - received
+          })
+        }
+      } catch (error) {
+        // Table might not exist yet, set default values
+        console.log('Insurance tables not found, using defaults')
+      }
       setLoading(false)
     }
     fetch()

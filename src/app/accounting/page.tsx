@@ -1,117 +1,104 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabaseProd } from '@/lib/supabase-prod'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import DataTable from '@/components/DataTable'
-import StatCard from '@/components/StatCard'
-import { Wallet, Receipt, BookOpen, TrendingUp, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
+import { 
+  Wallet, 
+  Receipt, 
+  BookOpen, 
+  TrendingUp, 
+  ArrowDownCircle, 
+  ArrowUpCircle,
+  CreditCard,
+  FileText,
+  Calculator,
+  User,
+  Download
+} from 'lucide-react'
+
+// Import all accounting components
+import Dashboard from './components/Dashboard'
+import CashBook from './components/CashBook'
+import ReceiptVoucher from './components/ReceiptVoucher'
+import PaymentVoucher from './components/PaymentVoucher'
+import JournalEntry from './components/JournalEntry'
+import ContraEntry from './components/ContraEntry'
+import Ledger from './components/Ledger'
+import TrialBalance from './components/TrialBalance'
+import PatientAccount from './components/PatientAccount'
+import TallyExport from './components/TallyExport'
 
 export default function AccountingPage() {
-  const [vouchers, setVouchers] = useState<any[]>([])
-  const [receipts, setReceipts] = useState<any[]>([])
-  const [accounts, setAccounts] = useState<any[]>([])
-  const [finalBills, setFinalBills] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<'vouchers' | 'receipts' | 'accounts' | 'final_bills'>('receipts')
-
-  useEffect(() => {
-    async function fetch() {
-      const [v, r, a, fb] = await Promise.all([
-        supabase.from('voucher_entries').select('*').order('date', { ascending: false }).limit(500),
-        supabase.from('account_receipts').select('*').order('date', { ascending: false }).limit(500),
-        supabase.from('accounts_full').select('*').order('name', { ascending: true }).limit(500),
-        supabase.from('final_billings').select('*').order('bill_date', { ascending: false }).limit(500),
-      ])
-      setVouchers(v.data || [])
-      setReceipts(r.data || [])
-      setAccounts(a.data || [])
-      setFinalBills(fb.data || [])
-      setLoading(false)
-    }
-    fetch()
-  }, [])
-
-  const totalDebits = vouchers.reduce((s, v) => s + (v.debit || 0), 0)
-  const totalCredits = vouchers.reduce((s, v) => s + (v.credit || 0), 0)
-  const totalReceipts = receipts.reduce((s, r) => s + (r.amount || 0), 0)
-  const totalFinalBilled = finalBills.reduce((s, f) => s + (parseFloat(f.total_amount) || 0), 0)
-
-  const voucherCols = [
-    { key: 'id', label: 'ID' },
-    { key: 'voucher_id', label: 'Voucher' },
-    { key: 'account_id', label: 'Account' },
-    { key: 'debit', label: 'Debit', render: (r: any) => r.debit ? <span className="text-red-600 font-medium">{formatCurrency(r.debit)}</span> : '—' },
-    { key: 'credit', label: 'Credit', render: (r: any) => r.credit ? <span className="text-green-600 font-medium">{formatCurrency(r.credit)}</span> : '—' },
-    { key: 'narration', label: 'Narration', render: (r: any) => <span className="text-xs text-gray-500 truncate max-w-[250px] block">{r.narration || '—'}</span> },
-    { key: 'date', label: 'Date', render: (r: any) => formatDate(r.date) },
-  ]
-
-  const receiptCols = [
-    { key: 'id', label: 'ID' },
-    { key: 'patient_id', label: 'Patient ID' },
-    { key: 'amount', label: 'Amount', render: (r: any) => <span className="font-semibold text-emerald-700">{formatCurrency(r.amount)}</span> },
-    { key: 'payment_mode', label: 'Mode' },
-    { key: 'receipt_no', label: 'Receipt #' },
-    { key: 'date', label: 'Date', render: (r: any) => formatDate(r.date) },
-  ]
-
-  const accountCols = [
-    { key: 'id', label: 'ID' },
-    { key: 'name', label: 'Account Name', render: (r: any) => <span className="font-medium">{r.name}</span> },
-    { key: 'alias_name', label: 'Alias' },
-    { key: 'account_type', label: 'Type' },
-    { key: 'status', label: 'Status' },
-    { key: 'balance', label: 'Balance', render: (r: any) => r.balance ? formatCurrency(r.balance) : '—' },
-    { key: 'payment_type', label: 'Payment Type' },
-  ]
-
-  const finalBillCols = [
-    { key: 'id', label: 'ID' },
-    { key: 'patient_id', label: 'Patient ID' },
-    { key: 'total_amount', label: 'Total', render: (r: any) => <span className="font-semibold">{r.total_amount ? `₹${Number(r.total_amount).toLocaleString()}` : '—'}</span> },
-    { key: 'amount_paid', label: 'Paid', render: (r: any) => <span className="text-green-600">{r.amount_paid ? `₹${Number(r.amount_paid).toLocaleString()}` : '—'}</span> },
-    { key: 'amount_pending', label: 'Pending', render: (r: any) => <span className="text-red-600">{r.amount_pending ? `₹${Number(r.amount_pending).toLocaleString()}` : '—'}</span> },
-    { key: 'discount', label: 'Discount' },
-    { key: 'bill_date', label: 'Date', render: (r: any) => formatDate(r.bill_date) },
-  ]
+  const [tab, setTab] = useState<string>('dashboard')
+  const [loading, setLoading] = useState(false)
 
   const tabs = [
-    { key: 'receipts', label: `Receipts (${receipts.length.toLocaleString()})` },
-    { key: 'vouchers', label: `Vouchers (${vouchers.length.toLocaleString()})` },
-    { key: 'accounts', label: `Accounts (${accounts.length.toLocaleString()})` },
-    { key: 'final_bills', label: `Final Bills (${finalBills.length.toLocaleString()})` },
-  ] as const
+    { key: 'dashboard', label: 'Dashboard', icon: TrendingUp },
+    { key: 'cashbook', label: 'Cash Book', icon: BookOpen },
+    { key: 'receipt', label: 'Receipt Voucher', icon: Receipt },
+    { key: 'payment', label: 'Payment Voucher', icon: ArrowUpCircle },
+    { key: 'journal', label: 'Journal Entry', icon: FileText },
+    { key: 'contra', label: 'Contra Entry', icon: CreditCard },
+    { key: 'ledger', label: 'Ledger', icon: Calculator },
+    { key: 'trial', label: 'Trial Balance', icon: ArrowDownCircle },
+    { key: 'patient', label: 'Patient Account', icon: User },
+    { key: 'tally', label: 'Tally Export', icon: Download },
+  ]
+
+  const renderContent = () => {
+    switch (tab) {
+      case 'dashboard': return <Dashboard />
+      case 'cashbook': return <CashBook />
+      case 'receipt': return <ReceiptVoucher />
+      case 'payment': return <PaymentVoucher />
+      case 'journal': return <JournalEntry />
+      case 'contra': return <ContraEntry />
+      case 'ledger': return <Ledger />
+      case 'trial': return <TrialBalance />
+      case 'patient': return <PatientAccount />
+      case 'tally': return <TallyExport />
+      default: return <Dashboard />
+    }
+  }
 
   return (
     <div>
+      {/* Header */}
       <div className="mb-6 flex items-center gap-3">
-        <div className="p-2.5 bg-amber-50 rounded-lg text-amber-600"><Wallet className="w-5 h-5" /></div>
+        <div className="p-2.5 bg-emerald-50 rounded-lg text-emerald-600">
+          <Wallet className="w-5 h-5" />
+        </div>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Accounting</h1>
-          <p className="text-sm text-gray-500">Vouchers, receipts, accounts & final billing</p>
+          <h1 className="text-2xl font-bold text-gray-900">Accounting Module</h1>
+          <p className="text-sm text-gray-500">Complete accounting management for Hope & Ayushman Hospitals</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard title="Total Receipts" value={loading ? '...' : formatCurrency(totalReceipts)} icon={Receipt} color="green" subtitle={`${receipts.length.toLocaleString()} entries`} />
-        <StatCard title="Total Debits" value={loading ? '...' : formatCurrency(totalDebits)} icon={ArrowUpCircle} color="red" subtitle="Voucher debits" />
-        <StatCard title="Total Credits" value={loading ? '...' : formatCurrency(totalCredits)} icon={ArrowDownCircle} color="blue" subtitle="Voucher credits" />
-        <StatCard title="Final Billed" value={loading ? '...' : formatCurrency(totalFinalBilled)} icon={TrendingUp} color="purple" subtitle={`${finalBills.length.toLocaleString()} bills`} />
+      {/* Tab Navigation */}
+      <div className="flex flex-wrap gap-2 mb-6 bg-white p-2 rounded-lg border border-gray-200">
+        {tabs.map(t => {
+          const Icon = t.icon
+          return (
+            <button 
+              key={t.key} 
+              onClick={() => setTab(t.key)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                tab === t.key 
+                  ? 'bg-emerald-500 text-white shadow-sm' 
+                  : 'bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      <div className="flex gap-2 mb-4">
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === t.key ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-            {t.label}
-          </button>
-        ))}
+      {/* Content */}
+      <div className="min-h-[600px]">
+        {renderContent()}
       </div>
-
-      {tab === 'receipts' && <DataTable data={receipts} columns={receiptCols} loading={loading} searchPlaceholder="Search receipts..." searchKey="receipt_no" />}
-      {tab === 'vouchers' && <DataTable data={vouchers} columns={voucherCols} loading={loading} searchPlaceholder="Search vouchers..." searchKey="narration" />}
-      {tab === 'accounts' && <DataTable data={accounts} columns={accountCols} loading={loading} searchPlaceholder="Search accounts..." searchKey="name" />}
-      {tab === 'final_bills' && <DataTable data={finalBills} columns={finalBillCols} loading={loading} searchPlaceholder="Search bills..." searchKey="patient_id" />}
     </div>
   )
 }
