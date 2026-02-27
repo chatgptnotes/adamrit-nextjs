@@ -1,4 +1,6 @@
 'use client'
+
+import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
 import { supabaseProd as supabase } from '@/lib/supabase-prod'
 import { QrCode, User, Printer, Download, ArrowLeft } from 'lucide-react'
@@ -19,7 +21,7 @@ interface Patient {
   registration_date: string
 }
 
-export default function PatientQRCard() {
+function PatientQRCardInner() {
   const searchParams = useSearchParams()
   const patientIdParam = searchParams.get('patient')
   
@@ -331,5 +333,13 @@ export default function PatientQRCard() {
         }
       `}</style>
     </div>
+  )
+}
+
+export default function PatientQRCard() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div></div>}>
+      <PatientQRCardInner />
+    </Suspense>
   )
 }

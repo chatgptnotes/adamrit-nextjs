@@ -1,4 +1,6 @@
 'use client'
+
+import { Suspense } from 'react'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -22,7 +24,7 @@ import {
 import Link from 'next/link'
 import { useReactToPrint } from 'react-to-print'
 
-export default function AdvancePaymentPage() {
+function AdvancePaymentPageInner() {
   const searchParams = useSearchParams()
   const { data: patients } = usePatients()
   const printRef = useRef<HTMLDivElement>(null)
@@ -399,5 +401,13 @@ export default function AdvancePaymentPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function AdvancePaymentPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div></div>}>
+      <AdvancePaymentPageInner />
+    </Suspense>
   )
 }

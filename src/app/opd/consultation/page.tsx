@@ -1,4 +1,6 @@
 'use client'
+
+import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
 import { supabaseProd as supabase } from '@/lib/supabase-prod'
 import { FileText, User, Stethoscope, Clipboard, Save, Printer } from 'lucide-react'
@@ -16,7 +18,7 @@ interface Patient {
   medical_history: string
 }
 
-export default function ConsultationNotes() {
+function ConsultationNotesInner() {
   const searchParams = useSearchParams()
   const patientParam = searchParams.get('patient')
   
@@ -531,5 +533,13 @@ export default function ConsultationNotes() {
         </div>
       </form>
     </div>
+  )
+}
+
+export default function ConsultationNotes() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div></div>}>
+      <ConsultationNotesInner />
+    </Suspense>
   )
 }
