@@ -1,487 +1,515 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabaseProd } from '@/lib/supabase-prod'
+import { getPatientAccountStatement, searchPatients } from '@/lib/accounting-engine'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import DataTable from '@/components/DataTable'
-import { User, Search, FileText, CreditCard, Calendar, AlertCircle, CheckCircle } from 'lucide-react'
+import { User, Search, Calendar, Printer, Download, DollarSign, Receipt } from 'lucide-react'
 
-interface PatientAccountData {
-  patient_id: string
+interface Patient {
+  id: string
+  name: string
+  phone?: string
+  address?: string
+}
+
+interface PatientStatement {
+  billings: Array<{
+    id: number
+    date: string
+    total_amount: number
+    description?: string
+  }>
+  payments: Array<{
+    id: number
+    voucher_date: string
+    credit: number
+    voucher_logs: {
+      voucher_number: string
+      type: string
+    }
+    narration: string
+  }>
   total_billed: number
-  total_received: number
+  total_paid: number
   outstanding: number
-  last_payment: string
-  receipts: any[]
-  bills: any[]
 }
 
 export default function PatientAccount() {
-  const [patientData, setPatientData] = useState<PatientAccountData | null>(null)
+  const [patients, setPatients] = useState<Patient[]>([])
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null)
+  const [statement, setStatement] = useState<PatientStatement | null>(null)
   const [loading, setLoading] = useState(false)
-  const [searchPatientId, setSearchPatientId] = useState('')
-  const [selectedLocation, setSelectedLocation] = useState<number>(1)
-  const [dateRange, setDateRange] = useState({
-    from: new Date(new Date().getFullYear(), new Date().getMonth() - 3, 1).toISOString().split('T')[0],
-    to: new Date().toISOString().split('T')[0]
+  const [searchTerm, setSearchTerm] = useState('')
+  const [showPatientSearch, setShowPatientSearch] = useState(false)
+  const [fromDate, setFromDate] = useState(() => {
+    const date = new Date()
+    date.setMonth(date.getMonth() - 3) // Last 3 months
+    return date.toISOString().split('T')[0]
   })
+  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0])
 
-  const searchPatient = async () => {
-    if (!searchPatientId.trim()) {
-      alert('Please enter a Patient ID')
-      return
+  const handlePatientSearch = async (term: string) => {
+    setSearchTerm(term)
+    if (term.length > 2) {
+      try {
+        const results = await searchPatients(term)
+        setPatients(results)
+        setShowPatientSearch(true)
+      } catch (error) {
+        console.error('Error searching patients:', error)
+        setPatients([])
+      }
+    } else {
+      setShowPatientSearch(false)
+      setPatients([])
     }
+  }
 
+  const selectPatient = async (patient: Patient) => {
+    setSelectedPatient(patient)
+    setSearchTerm(patient.name)
+    setShowPatientSearch(false)
+    await loadPatientStatement(patient.id)
+  }
+
+  const loadPatientStatement = async (patientId: string) => {
+    if (!patientId) return
+    
     setLoading(true)
     try {
-      // Fetch patient receipts
-      const { data: receipts } = await supabaseProd
-        .from('account_receipts')
-        .select('*')
-        .eq('patient_id', searchPatientId.trim())
-        .eq('location_id', selectedLocation)
-        .gte('date', dateRange.from)
-        .lte('date', dateRange.to)
-        .order('date', { ascending: false })
-
-      // Fetch patient bills (from final_billings table)
-      const { data: bills } = await supabaseProd
-        .from('final_billings')
-        .select('*')
-        .eq('patient_id', searchPatientId.trim())
-        .gte('bill_date', dateRange.from)
-        .lte('bill_date', dateRange.to)
-        .order('bill_date', { ascending: false })
-
-      // Calculate totals
-      const totalReceived = receipts?.reduce((sum, r) => sum + (r.amount || 0), 0) || 0
-      const totalBilled = bills?.reduce((sum, b) => sum + (parseFloat(b.total_amount) || 0), 0) || 0
-      const outstanding = totalBilled - totalReceived
-
-      // Find last payment date
-      const lastPayment = receipts && receipts.length > 0 ? receipts[0].date : null
-
-      setPatientData({
-        patient_id: searchPatientId.trim(),
-        total_billed: totalBilled,
-        total_received: totalReceived,
-        outstanding: outstanding,
-        last_payment: lastPayment,
-        receipts: receipts || [],
-        bills: bills || []
-      })
-
+      const statementData = await getPatientAccountStatement(patientId, fromDate, toDate)
+      setStatement(statementData)
     } catch (error) {
-      console.error('Error searching patient account:', error)
-      alert('Error searching patient account. Please try again.')
+      console.error('Error loading patient statement:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      searchPatient()
+  const handleRefresh = () => {
+    if (selectedPatient) {
+      loadPatientStatement(selectedPatient.id)
     }
   }
 
-  const receiptColumns = [
-    { key: 'receipt_no', label: 'Receipt #' },
-    { key: 'date', label: 'Date', render: (r: any) => formatDate(r.date) },
-    { 
-      key: 'amount', 
-      label: 'Amount',
-      render: (r: any) => <span className="font-semibold text-green-600">{formatCurrency(r.amount)}</span>
-    },
-    { 
-      key: 'payment_mode', 
-      label: 'Payment Mode',
-      render: (r: any) => (
-        <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-          r.payment_mode === 'Cash' ? 'bg-green-100 text-green-700' :
-          r.payment_mode === 'Card' ? 'bg-blue-100 text-blue-700' :
-          r.payment_mode === 'Cheque' ? 'bg-yellow-100 text-yellow-700' :
-          'bg-gray-100 text-gray-700'
-        }`}>
-          {r.payment_mode}
-        </span>
-      )
-    },
-    { key: 'cheque_no', label: 'Cheque #' },
-    { key: 'bank_name', label: 'Bank' }
-  ]
-
-  const billColumns = [
-    { key: 'id', label: 'Bill ID' },
-    { key: 'bill_date', label: 'Bill Date', render: (r: any) => formatDate(r.bill_date) },
-    { 
-      key: 'total_amount', 
-      label: 'Total Amount',
-      render: (r: any) => <span className="font-semibold">{formatCurrency(parseFloat(r.total_amount) || 0)}</span>
-    },
-    { 
-      key: 'amount_paid', 
-      label: 'Amount Paid',
-      render: (r: any) => <span className="text-green-600">{formatCurrency(parseFloat(r.amount_paid) || 0)}</span>
-    },
-    { 
-      key: 'amount_pending', 
-      label: 'Amount Pending',
-      render: (r: any) => {
-        const pending = parseFloat(r.amount_pending) || 0
-        return (
-          <span className={pending > 0 ? 'text-red-600 font-medium' : 'text-green-600'}>
-            {formatCurrency(pending)}
-          </span>
-        )
-      }
-    },
-    { 
-      key: 'discount', 
-      label: 'Discount',
-      render: (r: any) => formatCurrency(parseFloat(r.discount) || 0)
-    }
-  ]
-
-  const generateStatement = () => {
-    if (!patientData) return
-
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) return
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Patient Statement - ${patientData.patient_id}</title>
-          <style>
-            @media print {
-              body { margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
-              .statement { max-width: 800px; margin: 20px auto; }
-              .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px; }
-              .patient-info { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border: 1px solid #ddd; }
-              .summary { display: flex; justify-content: space-between; margin-bottom: 20px; }
-              .summary-box { border: 1px solid #ddd; padding: 10px; text-align: center; width: 30%; }
-              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-              th, td { border: 1px solid #333; padding: 6px; text-align: left; font-size: 11px; }
-              th { background-color: #f5f5f5; font-weight: bold; }
-              .number { text-align: right; }
-              .outstanding { color: red; font-weight: bold; }
-              .paid { color: green; }
-              @page { size: A4 portrait; margin: 0.5in; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="statement">
-            <div class="header">
-              <h2>${selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}</h2>
-              <h3>Patient Account Statement</h3>
-              <p>From ${formatDate(dateRange.from)} to ${formatDate(dateRange.to)}</p>
-            </div>
-            
-            <div class="patient-info">
-              <h3>Patient Information</h3>
-              <p><strong>Patient ID:</strong> ${patientData.patient_id}</p>
-              <p><strong>Statement Date:</strong> ${new Date().toLocaleDateString('en-IN')}</p>
-              <p><strong>Last Payment:</strong> ${patientData.last_payment ? formatDate(patientData.last_payment) : 'No payments found'}</p>
-            </div>
-
-            <div class="summary">
-              <div class="summary-box">
-                <h4>Total Billed</h4>
-                <p style="font-size: 16px; font-weight: bold;">${formatCurrency(patientData.total_billed)}</p>
-              </div>
-              <div class="summary-box">
-                <h4>Total Received</h4>
-                <p style="font-size: 16px; font-weight: bold;" class="paid">${formatCurrency(patientData.total_received)}</p>
-              </div>
-              <div class="summary-box">
-                <h4>Outstanding</h4>
-                <p style="font-size: 16px; font-weight: bold;" class="outstanding">${formatCurrency(patientData.outstanding)}</p>
-              </div>
-            </div>
-
-            ${patientData.bills.length > 0 ? `
-            <h3>Bills</h3>
-            <table>
-              <thead>
+  const handlePrint = () => {
+    if (!selectedPatient || !statement) return
+    
+    const printContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px;">
+          <h2 style="margin: 0;">PATIENT ACCOUNT STATEMENT</h2>
+          <h3 style="margin: 5px 0;">${selectedPatient.name}</h3>
+          <p style="margin: 5px 0;">Patient ID: ${selectedPatient.id}</p>
+          <p style="margin: 5px 0;">From ${formatDate(fromDate)} to ${formatDate(toDate)}</p>
+        </div>
+        
+        <div style="margin-bottom: 30px;">
+          <h4>BILLING SUMMARY</h4>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background-color: #f5f5f5;">
+                <th style="border: 1px solid #000; padding: 8px; text-align: left;">Date</th>
+                <th style="border: 1px solid #000; padding: 8px; text-align: left;">Description</th>
+                <th style="border: 1px solid #000; padding: 8px; text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${statement.billings.map(billing => `
                 <tr>
-                  <th>Bill Date</th>
-                  <th>Bill ID</th>
-                  <th class="number">Total Amount</th>
-                  <th class="number">Amount Paid</th>
-                  <th class="number">Amount Pending</th>
-                  <th class="number">Discount</th>
+                  <td style="border: 1px solid #000; padding: 8px;">${formatDate(billing.date)}</td>
+                  <td style="border: 1px solid #000; padding: 8px;">${billing.description || 'Medical Services'}</td>
+                  <td style="border: 1px solid #000; padding: 8px; text-align: right;">${formatCurrency(billing.total_amount)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                ${patientData.bills.map(bill => `
-                  <tr>
-                    <td>${formatDate(bill.bill_date)}</td>
-                    <td>${bill.id}</td>
-                    <td class="number">${formatCurrency(parseFloat(bill.total_amount) || 0)}</td>
-                    <td class="number paid">${formatCurrency(parseFloat(bill.amount_paid) || 0)}</td>
-                    <td class="number ${parseFloat(bill.amount_pending) > 0 ? 'outstanding' : 'paid'}">${formatCurrency(parseFloat(bill.amount_pending) || 0)}</td>
-                    <td class="number">${formatCurrency(parseFloat(bill.discount) || 0)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-            ` : ''}
-
-            ${patientData.receipts.length > 0 ? `
-            <h3>Payments Received</h3>
-            <table>
-              <thead>
+              `).join('')}
+              <tr style="background-color: #f9f9f9; font-weight: bold;">
+                <td colspan="2" style="border: 1px solid #000; padding: 8px;">TOTAL BILLED</td>
+                <td style="border: 1px solid #000; padding: 8px; text-align: right;">${formatCurrency(statement.total_billed)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        
+        <div style="margin-bottom: 30px;">
+          <h4>PAYMENT HISTORY</h4>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background-color: #f5f5f5;">
+                <th style="border: 1px solid #000; padding: 8px; text-align: left;">Date</th>
+                <th style="border: 1px solid #000; padding: 8px; text-align: left;">Voucher No.</th>
+                <th style="border: 1px solid #000; padding: 8px; text-align: left;">Narration</th>
+                <th style="border: 1px solid #000; padding: 8px; text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${statement.payments.map(payment => `
                 <tr>
-                  <th>Date</th>
-                  <th>Receipt #</th>
-                  <th class="number">Amount</th>
-                  <th>Payment Mode</th>
-                  <th>Cheque #</th>
-                  <th>Bank</th>
+                  <td style="border: 1px solid #000; padding: 8px;">${formatDate(payment.voucher_date)}</td>
+                  <td style="border: 1px solid #000; padding: 8px; font-size: 11px;">${payment.voucher_logs.voucher_number}</td>
+                  <td style="border: 1px solid #000; padding: 8px;">${payment.narration}</td>
+                  <td style="border: 1px solid #000; padding: 8px; text-align: right;">${formatCurrency(payment.credit)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                ${patientData.receipts.map(receipt => `
-                  <tr>
-                    <td>${formatDate(receipt.date)}</td>
-                    <td>${receipt.receipt_no}</td>
-                    <td class="number paid">${formatCurrency(receipt.amount)}</td>
-                    <td>${receipt.payment_mode}</td>
-                    <td>${receipt.cheque_no || '—'}</td>
-                    <td>${receipt.bank_name || '—'}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-            ` : ''}
-
-            <div style="margin-top: 40px; text-align: center; font-size: 10px; color: #666;">
-              Generated on ${new Date().toLocaleString('en-IN')}
-            </div>
-          </div>
-        </body>
-      </html>
+              `).join('')}
+              <tr style="background-color: #f9f9f9; font-weight: bold;">
+                <td colspan="3" style="border: 1px solid #000; padding: 8px;">TOTAL PAID</td>
+                <td style="border: 1px solid #000; padding: 8px; text-align: right;">${formatCurrency(statement.total_paid)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        
+        <div style="margin-top: 30px; border: 2px solid #000; padding: 15px;">
+          <table style="width: 100%;">
+            <tr>
+              <td style="font-weight: bold; font-size: 14px;">Total Billed:</td>
+              <td style="text-align: right; font-size: 14px;">${formatCurrency(statement.total_billed)}</td>
+            </tr>
+            <tr>
+              <td style="font-weight: bold; font-size: 14px;">Total Paid:</td>
+              <td style="text-align: right; font-size: 14px;">${formatCurrency(statement.total_paid)}</td>
+            </tr>
+            <tr style="border-top: 1px solid #000;">
+              <td style="font-weight: bold; font-size: 16px; color: ${statement.outstanding > 0 ? 'red' : 'green'};">
+                ${statement.outstanding > 0 ? 'Outstanding Balance:' : 'Advance/Credit:'}
+              </td>
+              <td style="text-align: right; font-weight: bold; font-size: 16px; color: ${statement.outstanding > 0 ? 'red' : 'green'};">
+                ${formatCurrency(Math.abs(statement.outstanding))}
+              </td>
+            </tr>
+          </table>
+        </div>
+        
+        <div style="margin-top: 40px; text-align: right;">
+          <p>Generated on: ${formatDate(new Date().toISOString().split('T')[0])}</p>
+        </div>
+      </div>
     `
+    
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
+      printWindow.close()
+    }
+  }
 
-    printWindow.document.write(html)
-    printWindow.document.close()
-    printWindow.print()
+  const handleExportCSV = () => {
+    if (!selectedPatient || !statement) return
+    
+    const csvData = [
+      ['Patient Account Statement'],
+      ['Patient Name', selectedPatient.name],
+      ['Patient ID', selectedPatient.id],
+      ['From Date', fromDate],
+      ['To Date', toDate],
+      [''],
+      ['BILLING DETAILS'],
+      ['Date', 'Description', 'Amount']
+    ]
+    
+    statement.billings.forEach(billing => {
+      csvData.push([
+        billing.date,
+        billing.description || 'Medical Services',
+        billing.total_amount.toString()
+      ])
+    })
+    
+    csvData.push(['', 'TOTAL BILLED', statement.total_billed.toString()])
+    csvData.push([''])
+    csvData.push(['PAYMENT HISTORY'])
+    csvData.push(['Date', 'Voucher No.', 'Narration', 'Amount'])
+    
+    statement.payments.forEach(payment => {
+      csvData.push([
+        payment.voucher_date,
+        payment.voucher_logs.voucher_number,
+        payment.narration.replace(/"/g, '""'),
+        payment.credit.toString()
+      ])
+    })
+    
+    csvData.push(['', '', 'TOTAL PAID', statement.total_paid.toString()])
+    csvData.push([''])
+    csvData.push(['SUMMARY'])
+    csvData.push(['Total Billed', statement.total_billed.toString()])
+    csvData.push(['Total Paid', statement.total_paid.toString()])
+    csvData.push([statement.outstanding > 0 ? 'Outstanding Balance' : 'Advance/Credit', Math.abs(statement.outstanding).toString()])
+    
+    const csvContent = csvData.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `patient-account-${selectedPatient.name.replace(/\s+/g, '-')}-${fromDate}-to-${toDate}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="p-2.5 bg-cyan-50 rounded-lg text-cyan-600">
-          <User className="w-5 h-5" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Patient Account</h2>
-          <p className="text-sm text-gray-500">Search patient, view receivable/payable/statement</p>
-        </div>
-      </div>
-
-      {/* Search Form */}
-      <div className="bg-white p-6 rounded-xl border border-gray-200">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Search Patient Account</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Patient ID *
-            </label>
-            <input
-              type="text"
-              value={searchPatientId}
-              onChange={(e) => setSearchPatientId(e.target.value)}
-              onKeyPress={handleKeyPress}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              placeholder="Enter Patient ID"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Location
-            </label>
-            <select 
-              value={selectedLocation} 
-              onChange={(e) => setSelectedLocation(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <User className="w-7 h-7 text-blue-600" />
+          Patient Account
+        </h1>
+        {selectedPatient && statement && (
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handlePrint}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
             >
-              <option value={1}>Hope Hospital</option>
-              <option value={2}>Ayushman Hospital</option>
-            </select>
+              <Printer className="w-4 h-4" />
+              Print Statement
+            </button>
+            <button
+              onClick={handleExportCSV}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
           </div>
+        )}
+      </div>
 
+      {/* Patient Search and Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Patient Search */}
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Patient *</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => handlePatientSearch(e.target.value)}
+                placeholder="Search by name, phone, or ID..."
+                className="w-full px-3 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+            </div>
+            
+            {/* Patient Search Results */}
+            {showPatientSearch && patients.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {patients.map((patient) => (
+                  <button
+                    key={patient.id}
+                    type="button"
+                    onClick={() => selectPatient(patient)}
+                    className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100 last:border-b-0"
+                  >
+                    <div className="font-medium">{patient.name}</div>
+                    <div className="text-xs text-gray-500">
+                      ID: {patient.id} {patient.phone && ` • ${patient.phone}`}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            
+            {selectedPatient && (
+              <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700">
+                Selected: {selectedPatient.name} (ID: {selectedPatient.id})
+              </div>
+            )}
+          </div>
+          
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              From Date
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">From Date</label>
             <input
               type="date"
-              value={dateRange.from}
-              onChange={(e) => setDateRange(prev => ({ ...prev, from: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
-
+          
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              To Date
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">To Date</label>
             <input
               type="date"
-              value={dateRange.to}
-              onChange={(e) => setDateRange(prev => ({ ...prev, to: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
-
-          <button
-            onClick={searchPatient}
-            disabled={loading || !searchPatientId.trim()}
-            className="flex items-center justify-center gap-2 px-6 py-2 bg-cyan-600 text-white rounded-lg font-medium hover:bg-cyan-700 transition-colors disabled:opacity-50"
-          >
-            <Search className="w-4 h-4" />
-            {loading ? 'Searching...' : 'Search'}
-          </button>
+          
+          <div className="flex items-end">
+            <button
+              onClick={handleRefresh}
+              disabled={!selectedPatient}
+              className="w-full px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <Calendar className="w-4 h-4" />
+              Load Statement
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Patient Account Summary */}
-      {patientData && (
+      {/* Account Statement */}
+      {selectedPatient && statement && (
         <>
-          <div className="bg-white p-6 rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                Patient Account: {patientData.patient_id}
-              </h3>
-              <button
-                onClick={generateStatement}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors"
-              >
-                <FileText className="w-4 h-4" />
-                Print Statement
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <FileText className="w-4 h-4 text-blue-600" />
-                  <span className="text-sm font-medium text-blue-700">Total Billed</span>
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-blue-50 rounded-xl border-2 border-blue-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-blue-700">Total Billed</p>
+                  <p className="text-2xl font-bold text-blue-900 mt-1">
+                    {formatCurrency(statement.total_billed)}
+                  </p>
                 </div>
-                <span className="text-xl font-semibold text-blue-900">
-                  {formatCurrency(patientData.total_billed)}
-                </span>
-              </div>
-
-              <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle className="w-4 h-4 text-green-600" />
-                  <span className="text-sm font-medium text-green-700">Total Received</span>
-                </div>
-                <span className="text-xl font-semibold text-green-900">
-                  {formatCurrency(patientData.total_received)}
-                </span>
-              </div>
-
-              <div className={`p-4 rounded-lg border ${
-                patientData.outstanding > 0 
-                  ? 'bg-red-50 border-red-200' 
-                  : 'bg-green-50 border-green-200'
-              }`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertCircle className={`w-4 h-4 ${
-                    patientData.outstanding > 0 ? 'text-red-600' : 'text-green-600'
-                  }`} />
-                  <span className={`text-sm font-medium ${
-                    patientData.outstanding > 0 ? 'text-red-700' : 'text-green-700'
-                  }`}>
-                    Outstanding
-                  </span>
-                </div>
-                <span className={`text-xl font-semibold ${
-                  patientData.outstanding > 0 ? 'text-red-900' : 'text-green-900'
-                }`}>
-                  {formatCurrency(Math.abs(patientData.outstanding))}
-                </span>
-              </div>
-
-              <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Calendar className="w-4 h-4 text-purple-600" />
-                  <span className="text-sm font-medium text-purple-700">Last Payment</span>
-                </div>
-                <span className="text-lg font-semibold text-purple-900">
-                  {patientData.last_payment ? formatDate(patientData.last_payment) : 'No payments'}
-                </span>
+                <Receipt className="w-8 h-8 text-blue-600" />
               </div>
             </div>
-
-            {/* Account Status */}
-            <div className={`p-4 rounded-lg ${
-              patientData.outstanding > 0
-                ? 'bg-red-50 border border-red-200'
-                : 'bg-green-50 border border-green-200'
+            
+            <div className="bg-green-50 rounded-xl border-2 border-green-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-green-700">Total Paid</p>
+                  <p className="text-2xl font-bold text-green-900 mt-1">
+                    {formatCurrency(statement.total_paid)}
+                  </p>
+                </div>
+                <DollarSign className="w-8 h-8 text-green-600" />
+              </div>
+            </div>
+            
+            <div className={`rounded-xl border-2 p-6 ${
+              statement.outstanding > 0 
+                ? 'bg-red-50 border-red-200' 
+                : 'bg-purple-50 border-purple-200'
             }`}>
-              <p className={`font-medium ${
-                patientData.outstanding > 0 ? 'text-red-900' : 'text-green-900'
-              }`}>
-                {patientData.outstanding > 0 
-                  ? `⚠ Patient has an outstanding balance of ${formatCurrency(patientData.outstanding)}` 
-                  : '✓ Patient account is fully paid up'
-                }
-              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className={`text-sm font-medium ${
+                    statement.outstanding > 0 ? 'text-red-700' : 'text-purple-700'
+                  }`}>
+                    {statement.outstanding > 0 ? 'Outstanding' : 'Advance/Credit'}
+                  </p>
+                  <p className={`text-2xl font-bold mt-1 ${
+                    statement.outstanding > 0 ? 'text-red-900' : 'text-purple-900'
+                  }`}>
+                    {formatCurrency(Math.abs(statement.outstanding))}
+                  </p>
+                </div>
+                <DollarSign className={`w-8 h-8 ${
+                  statement.outstanding > 0 ? 'text-red-600' : 'text-purple-600'
+                }`} />
+              </div>
             </div>
           </div>
 
-          {/* Bills and Receipts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Bills */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <FileText className="w-5 h-5 text-blue-600" />
-                Bills ({patientData.bills.length})
-              </h3>
-              <DataTable 
-                data={patientData.bills}
-                columns={billColumns}
-                loading={false}
-                searchPlaceholder="Search bills..."
-                searchKey="id"
-              />
+          {/* Billing Details */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Billing Details</h3>
             </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left py-3 px-6 font-medium text-gray-700">Date</th>
+                    <th className="text-left py-3 px-6 font-medium text-gray-700">Description</th>
+                    <th className="text-right py-3 px-6 font-medium text-gray-700">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={3} className="text-center py-8 text-gray-500">Loading billing details...</td>
+                    </tr>
+                  ) : statement.billings.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="text-center py-8 text-gray-500">No billings found</td>
+                    </tr>
+                  ) : (
+                    statement.billings.map((billing, index) => (
+                      <tr key={billing.id} className={`border-b border-gray-100 hover:bg-gray-50 ${
+                        index % 2 === 0 ? 'bg-white' : 'bg-gray-25'
+                      }`}>
+                        <td className="py-3 px-6">{formatDate(billing.date)}</td>
+                        <td className="py-3 px-6">{billing.description || 'Medical Services'}</td>
+                        <td className="py-3 px-6 text-right font-semibold text-blue-600">
+                          {formatCurrency(billing.total_amount)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                  {statement.billings.length > 0 && (
+                    <tr className="bg-blue-50 border-t-2 border-blue-200">
+                      <td colSpan={2} className="py-4 px-6 font-bold text-blue-700">Total Billed</td>
+                      <td className="py-4 px-6 text-right font-bold text-blue-700 text-lg">
+                        {formatCurrency(statement.total_billed)}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-            {/* Receipts */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-green-600" />
-                Payments ({patientData.receipts.length})
-              </h3>
-              <DataTable 
-                data={patientData.receipts}
-                columns={receiptColumns}
-                loading={false}
-                searchPlaceholder="Search receipts..."
-                searchKey="receipt_no"
-              />
+          {/* Payment History */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Payment History</h3>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left py-3 px-6 font-medium text-gray-700">Date</th>
+                    <th className="text-left py-3 px-6 font-medium text-gray-700">Voucher No.</th>
+                    <th className="text-left py-3 px-6 font-medium text-gray-700">Narration</th>
+                    <th className="text-right py-3 px-6 font-medium text-gray-700">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {statement.payments.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="text-center py-8 text-gray-500">No payments found</td>
+                    </tr>
+                  ) : (
+                    statement.payments.map((payment, index) => (
+                      <tr key={payment.id} className={`border-b border-gray-100 hover:bg-gray-50 ${
+                        index % 2 === 0 ? 'bg-white' : 'bg-gray-25'
+                      }`}>
+                        <td className="py-3 px-6">{formatDate(payment.voucher_date)}</td>
+                        <td className="py-3 px-6 font-mono text-xs">{payment.voucher_logs.voucher_number}</td>
+                        <td className="py-3 px-6 max-w-xs">{payment.narration}</td>
+                        <td className="py-3 px-6 text-right font-semibold text-green-600">
+                          {formatCurrency(payment.credit)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                  {statement.payments.length > 0 && (
+                    <tr className="bg-green-50 border-t-2 border-green-200">
+                      <td colSpan={3} className="py-4 px-6 font-bold text-green-700">Total Paid</td>
+                      <td className="py-4 px-6 text-right font-bold text-green-700 text-lg">
+                        {formatCurrency(statement.total_paid)}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </>
       )}
 
-      {/* Instructions */}
-      {!patientData && !loading && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 text-center">
-          <User className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-          <h3 className="text-lg font-semibold text-gray-600 mb-2">Search Patient Account</h3>
-          <p className="text-gray-500">
-            Enter a Patient ID to view their complete account statement including all bills, 
-            payments, and outstanding balances.
-          </p>
+      {/* No Patient Selected */}
+      {!selectedPatient && (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+          <User className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No Patient Selected</h3>
+          <p className="text-gray-500">Search and select a patient to view their account statement</p>
         </div>
       )}
     </div>

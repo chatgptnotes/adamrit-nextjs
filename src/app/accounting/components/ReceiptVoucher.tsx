@@ -1,461 +1,376 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabaseProd } from '@/lib/supabase-prod'
+import { createReceiptVoucher, searchPatients } from '@/lib/accounting-engine'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import DataTable from '@/components/DataTable'
-import { Receipt, Plus, Printer, Save, User, CreditCard } from 'lucide-react'
+import { Receipt, Search, Printer, Save, User, DollarSign } from 'lucide-react'
+
+interface Patient {
+  id: string
+  name: string
+  phone?: string
+  address?: string
+}
+
+interface ReceiptForm {
+  patient_id: string
+  patient_name: string
+  amount: number
+  payment_mode: string
+  narration: string
+  voucher_date: string
+  location_id: number
+}
 
 export default function ReceiptVoucher() {
-  const [receipts, setReceipts] = useState<any[]>([])
-  const [accounts, setAccounts] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [showForm, setShowForm] = useState(false)
-  const [selectedLocation, setSelectedLocation] = useState<number>(1)
-  const [formData, setFormData] = useState({
+  const [form, setForm] = useState<ReceiptForm>({
     patient_id: '',
     patient_name: '',
-    amount: '',
+    amount: 0,
     payment_mode: 'Cash',
-    account_id: '',
     narration: '',
-    cheque_no: '',
-    cheque_date: '',
-    bank_name: '',
+    voucher_date: new Date().toISOString().split('T')[0],
     location_id: 1
   })
+  
+  const [patients, setPatients] = useState<Patient[]>([])
+  const [searchTerm, setSearchTerm] = useState('')
+  const [showPatientSearch, setShowPatientSearch] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [lastVoucherNumber, setLastVoucherNumber] = useState('')
+  const [showSuccess, setShowSuccess] = useState(false)
 
-  useEffect(() => {
-    fetchData()
-  }, [selectedLocation])
+  const handlePatientSearch = async (term: string) => {
+    setSearchTerm(term)
+    if (term.length > 2) {
+      try {
+        const results = await searchPatients(term)
+        setPatients(results)
+        setShowPatientSearch(true)
+      } catch (error) {
+        console.error('Error searching patients:', error)
+      }
+    } else {
+      setShowPatientSearch(false)
+      setPatients([])
+    }
+  }
 
-  const fetchData = async () => {
+  const selectPatient = (patient: Patient) => {
+    setForm(prev => ({
+      ...prev,
+      patient_id: patient.id,
+      patient_name: patient.name
+    }))
+    setSearchTerm(patient.name)
+    setShowPatientSearch(false)
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    if (!form.patient_id || !form.amount || !form.narration) {
+      alert('Please fill all required fields')
+      return
+    }
+
     setLoading(true)
     try {
-      // Fetch receipts
-      const { data: receiptData } = await supabaseProd
-        .from('account_receipts')
-        .select('*')
-        .eq('location_id', selectedLocation)
-        .order('date', { ascending: false })
-        .limit(100)
+      const result = await createReceiptVoucher({
+        patient_id: form.patient_id,
+        amount: form.amount,
+        payment_mode: form.payment_mode,
+        narration: form.narration,
+        voucher_date: form.voucher_date,
+        location_id: form.location_id
+      })
 
-      // Fetch chart of accounts for dropdown
-      const { data: accountData } = await supabaseProd
-        .from('chart_of_accounts')
-        .select('*')
-        .order('name', { ascending: true })
-
-      setReceipts(receiptData || [])
-      setAccounts(accountData || [])
+      if (result.success) {
+        setLastVoucherNumber(result.voucher_number)
+        setShowSuccess(true)
+        
+        // Reset form
+        setForm({
+          patient_id: '',
+          patient_name: '',
+          amount: 0,
+          payment_mode: 'Cash',
+          narration: '',
+          voucher_date: new Date().toISOString().split('T')[0],
+          location_id: form.location_id
+        })
+        setSearchTerm('')
+        
+        // Hide success message after 3 seconds
+        setTimeout(() => setShowSuccess(false), 3000)
+      }
     } catch (error) {
-      console.error('Error fetching data:', error)
+      console.error('Error creating receipt voucher:', error)
+      alert('Error creating receipt voucher. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target
-    setFormData(prev => ({
-      ...prev,
-      [name]: value,
-      location_id: selectedLocation
-    }))
-  }
-
-  const generateReceiptNumber = () => {
-    const date = new Date()
-    const dateStr = date.toISOString().split('T')[0].replace(/-/g, '')
-    const location = selectedLocation === 1 ? 'H' : 'A'
-    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0')
-    return `R${location}${dateStr}${random}`
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-
-    try {
-      const receiptData = {
-        receipt_no: generateReceiptNumber(),
-        patient_id: formData.patient_id || null,
-        amount: parseFloat(formData.amount),
-        payment_mode: formData.payment_mode,
-        date: new Date().toISOString().split('T')[0],
-        location_id: selectedLocation,
-        cheque_no: formData.cheque_no || null,
-        cheque_date: formData.cheque_date || null,
-        bank_name: formData.bank_name || null,
-        created_at: new Date().toISOString()
-      }
-
-      // Insert receipt
-      const { data: receipt, error: receiptError } = await supabaseProd
-        .from('account_receipts')
-        .insert([receiptData])
-        .select()
-        .single()
-
-      if (receiptError) throw receiptError
-
-      // Create corresponding voucher entry for double-entry bookkeeping
-      if (formData.account_id) {
-        const voucherEntry = {
-          account_id: parseInt(formData.account_id),
-          debit: 0,
-          credit: parseFloat(formData.amount),
-          narration: formData.narration || `Receipt from ${formData.patient_name || formData.patient_id}`,
-          date: new Date().toISOString().split('T')[0],
-          location_id: selectedLocation,
-          created_at: new Date().toISOString()
-        }
-
-        await supabaseProd
-          .from('voucher_entries')
-          .insert([voucherEntry])
-      }
-
-      // Reset form and refresh data
-      setFormData({
-        patient_id: '',
-        patient_name: '',
-        amount: '',
-        payment_mode: 'Cash',
-        account_id: '',
-        narration: '',
-        cheque_no: '',
-        cheque_date: '',
-        bank_name: '',
-        location_id: selectedLocation
-      })
-      setShowForm(false)
-      fetchData()
-
-      alert('Receipt created successfully!')
-    } catch (error) {
-      console.error('Error creating receipt:', error)
-      alert('Error creating receipt. Please try again.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const columns = [
-    { key: 'receipt_no', label: 'Receipt #' },
-    { key: 'patient_id', label: 'Patient ID' },
-    { 
-      key: 'amount', 
-      label: 'Amount',
-      render: (r: any) => <span className="font-semibold text-emerald-700">{formatCurrency(r.amount)}</span>
-    },
-    { 
-      key: 'payment_mode', 
-      label: 'Payment Mode',
-      render: (r: any) => (
-        <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-          r.payment_mode === 'Cash' ? 'bg-green-100 text-green-700' :
-          r.payment_mode === 'Card' ? 'bg-blue-100 text-blue-700' :
-          r.payment_mode === 'Cheque' ? 'bg-yellow-100 text-yellow-700' :
-          'bg-gray-100 text-gray-700'
-        }`}>
-          {r.payment_mode}
-        </span>
-      )
-    },
-    { key: 'cheque_no', label: 'Cheque #' },
-    { key: 'bank_name', label: 'Bank' },
-    { key: 'date', label: 'Date', render: (r: any) => formatDate(r.date) },
-    {
-      key: 'actions',
-      label: 'Actions',
-      render: (r: any) => (
-        <button
-          onClick={() => printReceipt(r)}
-          className="p-1 text-gray-600 hover:text-blue-600 transition-colors"
-          title="Print Receipt"
-        >
-          <Printer className="w-4 h-4" />
-        </button>
-      )
-    }
-  ]
-
-  const printReceipt = (receipt: any) => {
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) return
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Receipt - ${receipt.receipt_no}</title>
-          <style>
-            @media print {
-              body { margin: 0; font-family: Arial, sans-serif; font-size: 14px; }
-              .receipt { max-width: 400px; margin: 20px auto; padding: 20px; border: 1px solid #333; }
-              .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 15px; }
-              .row { display: flex; justify-content: space-between; margin-bottom: 5px; }
-              .total { font-weight: bold; font-size: 16px; border-top: 1px solid #333; padding-top: 10px; margin-top: 10px; }
-              @page { size: A5 portrait; margin: 0.5in; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="receipt">
-            <div class="header">
-              <h2>${selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}</h2>
-              <p>Payment Receipt</p>
-              <p><strong>Receipt #: ${receipt.receipt_no}</strong></p>
-            </div>
-            <div class="row">
-              <span>Date:</span>
-              <span>${formatDate(receipt.date)}</span>
-            </div>
-            <div class="row">
-              <span>Patient ID:</span>
-              <span>${receipt.patient_id || 'N/A'}</span>
-            </div>
-            <div class="row">
-              <span>Payment Mode:</span>
-              <span>${receipt.payment_mode}</span>
-            </div>
-            ${receipt.cheque_no ? `
-            <div class="row">
-              <span>Cheque #:</span>
-              <span>${receipt.cheque_no}</span>
-            </div>
-            <div class="row">
-              <span>Bank:</span>
-              <span>${receipt.bank_name || ''}</span>
-            </div>
-            ` : ''}
-            <div class="row total">
-              <span>Amount Received:</span>
-              <span>${formatCurrency(receipt.amount)}</span>
-            </div>
-            <div style="margin-top: 30px; text-align: center; font-size: 12px;">
-              <p>Thank you for your payment!</p>
-            </div>
+  const handlePrint = () => {
+    if (!lastVoucherNumber) return
+    
+    const printContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px;">
+          <h2 style="margin: 0;">${form.location_id === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}</h2>
+          <h3 style="margin: 5px 0;">RECEIPT VOUCHER</h3>
+          <p style="margin: 5px 0;">Voucher No: ${lastVoucherNumber}</p>
+          <p style="margin: 5px 0;">Date: ${formatDate(form.voucher_date)}</p>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+          <p><strong>Received from:</strong> ${form.patient_name} (ID: ${form.patient_id})</p>
+          <p><strong>Amount:</strong> ${formatCurrency(form.amount)}</p>
+          <p><strong>Payment Mode:</strong> ${form.payment_mode}</p>
+          <p><strong>Being payment for:</strong> ${form.narration}</p>
+        </div>
+        
+        <div style="border-top: 1px solid #000; margin-top: 30px; padding-top: 20px;">
+          <div style="float: right;">
+            <p style="margin: 0;">Received by</p>
+            <br><br>
+            <p style="margin: 0; border-top: 1px solid #000; padding-top: 5px;">Signature</p>
           </div>
-        </body>
-      </html>
+        </div>
+      </div>
     `
-
-    printWindow.document.write(html)
-    printWindow.document.close()
-    printWindow.print()
+    
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
+      printWindow.close()
+    }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-green-50 rounded-lg text-green-600">
-            <Receipt className="w-5 h-5" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold text-gray-900">Receipt Voucher</h2>
-            <p className="text-sm text-gray-500">Create and manage payment receipts</p>
+        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <Receipt className="w-7 h-7 text-green-600" />
+          Receipt Voucher
+        </h1>
+        {lastVoucherNumber && (
+          <button
+            onClick={handlePrint}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+          >
+            <Printer className="w-4 h-4" />
+            Print Receipt
+          </button>
+        )}
+      </div>
+
+      {/* Success Message */}
+      {showSuccess && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <Receipt className="w-5 h-5 text-green-600" />
+            <span className="text-green-700 font-medium">
+              Receipt voucher created successfully! Voucher No: {lastVoucherNumber}
+            </span>
           </div>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Receipt
-        </button>
-      </div>
+      )}
 
-      {/* Location Selector */}
-      <div className="flex items-center gap-4 bg-white p-4 rounded-lg border border-gray-200">
-        <label className="text-sm font-medium text-gray-700">Location:</label>
-        <select 
-          value={selectedLocation} 
-          onChange={(e) => setSelectedLocation(Number(e.target.value))}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-        >
-          <option value={1}>Hope Hospital</option>
-          <option value={2}>Ayushman Hospital</option>
-        </select>
-      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Form */}
+        <div className="lg:col-span-2">
+          <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">
+            <h3 className="text-lg font-semibold text-gray-900">Create New Receipt</h3>
+            
+            {/* Location and Date */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Location *</label>
+                <select
+                  value={form.location_id}
+                  onChange={(e) => setForm(prev => ({ ...prev, location_id: Number(e.target.value) }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                >
+                  <option value={1}>Hope Hospital</option>
+                  <option value={2}>Ayushman Hospital</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Date *</label>
+                <input
+                  type="date"
+                  value={form.voucher_date}
+                  onChange={(e) => setForm(prev => ({ ...prev, voucher_date: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                />
+              </div>
+            </div>
 
-      {/* Receipt Form */}
-      {showForm && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-6">Create New Receipt</h3>
-          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Patient Search */}
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                <User className="w-4 h-4 inline mr-1" />
+                Patient *
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => handlePatientSearch(e.target.value)}
+                  placeholder="Search patient by name, phone, or ID..."
+                  className="w-full px-3 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                />
+                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+              </div>
+              
+              {/* Patient Search Results */}
+              {showPatientSearch && patients.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {patients.map((patient) => (
+                    <button
+                      key={patient.id}
+                      type="button"
+                      onClick={() => selectPatient(patient)}
+                      className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100 last:border-b-0"
+                    >
+                      <div className="font-medium">{patient.name}</div>
+                      <div className="text-xs text-gray-500">ID: {patient.id} {patient.phone && `• ${patient.phone}`}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              
+              {form.patient_id && (
+                <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700">
+                  Selected: {form.patient_name} (ID: {form.patient_id})
+                </div>
+              )}
+            </div>
+
+            {/* Amount and Payment Mode */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Patient ID
-                </label>
-                <input
-                  type="text"
-                  name="patient_id"
-                  value={formData.patient_id}
-                  onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="Enter patient ID"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Patient Name
-                </label>
-                <input
-                  type="text"
-                  name="patient_name"
-                  value={formData.patient_name}
-                  onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="Enter patient name"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <DollarSign className="w-4 h-4 inline mr-1" />
                   Amount *
                 </label>
                 <input
                   type="number"
+                  value={form.amount || ''}
+                  onChange={(e) => setForm(prev => ({ ...prev, amount: Number(e.target.value) }))}
+                  placeholder="0.00"
+                  min="0"
                   step="0.01"
-                  name="amount"
-                  value={formData.amount}
-                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="Enter amount"
                 />
               </div>
+              
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Payment Mode *
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Payment Mode *</label>
                 <select
-                  name="payment_mode"
-                  value={formData.payment_mode}
-                  onChange={handleInputChange}
+                  value={form.payment_mode}
+                  onChange={(e) => setForm(prev => ({ ...prev, payment_mode: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                 >
                   <option value="Cash">Cash</option>
                   <option value="Card">Card</option>
-                  <option value="Cheque">Cheque</option>
                   <option value="UPI">UPI</option>
                   <option value="Bank Transfer">Bank Transfer</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Account
-                </label>
-                <select
-                  name="account_id"
-                  value={formData.account_id}
-                  onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                >
-                  <option value="">Select account</option>
-                  {accounts.map(acc => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name}
-                    </option>
-                  ))}
+                  <option value="Cheque">Cheque</option>
                 </select>
               </div>
             </div>
 
-            {/* Cheque details (show only if payment mode is Cheque) */}
-            {formData.payment_mode === 'Cheque' && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-yellow-50 rounded-lg">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Cheque Number
-                  </label>
-                  <input
-                    type="text"
-                    name="cheque_no"
-                    value={formData.cheque_no}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="Cheque number"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Cheque Date
-                  </label>
-                  <input
-                    type="date"
-                    name="cheque_date"
-                    value={formData.cheque_date}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Bank Name
-                  </label>
-                  <input
-                    type="text"
-                    name="bank_name"
-                    value={formData.bank_name}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="Bank name"
-                  />
-                </div>
-              </div>
-            )}
-
+            {/* Narration */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Narration
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Narration *</label>
               <textarea
-                name="narration"
-                value={formData.narration}
-                onChange={handleInputChange}
+                value={form.narration}
+                onChange={(e) => setForm(prev => ({ ...prev, narration: e.target.value }))}
+                placeholder="Payment received for..."
                 rows={3}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="Description or narration for this receipt"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                required
               />
             </div>
 
-            <div className="flex gap-4 pt-4">
+            {/* Submit Button */}
+            <div className="flex justify-end">
               <button
                 type="submit"
-                disabled={saving}
-                className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+                disabled={loading}
+                className="px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 <Save className="w-4 h-4" />
-                {saving ? 'Saving...' : 'Save Receipt'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-400 transition-colors"
-              >
-                Cancel
+                {loading ? 'Creating...' : 'Create Receipt'}
               </button>
             </div>
           </form>
         </div>
-      )}
 
-      {/* Receipts Table */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Receipts</h3>
-        <DataTable 
-          data={receipts}
-          columns={columns}
-          loading={loading}
-          searchPlaceholder="Search receipts..."
-          searchKey="receipt_no"
-        />
+        {/* Preview */}
+        <div className="lg:col-span-1">
+          <div className="bg-white rounded-xl border border-gray-200 p-6 sticky top-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Receipt Preview</h3>
+            
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 space-y-3">
+              <div className="text-center">
+                <h4 className="font-bold">
+                  {form.location_id === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}
+                </h4>
+                <p className="text-sm text-gray-600">RECEIPT VOUCHER</p>
+              </div>
+              
+              <div className="border-t border-gray-200 pt-3 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Date:</span>
+                  <span>{formatDate(form.voucher_date)}</span>
+                </div>
+                
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Patient:</span>
+                  <span>{form.patient_name || 'Not selected'}</span>
+                </div>
+                
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Amount:</span>
+                  <span className="font-semibold">{formatCurrency(form.amount)}</span>
+                </div>
+                
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Mode:</span>
+                  <span>{form.payment_mode}</span>
+                </div>
+                
+                {form.narration && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <p className="text-xs text-gray-600">For: {form.narration}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {form.amount > 0 && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-600 mb-1">Amount in words:</p>
+                <p className="text-sm font-medium">
+                  {/* You can add a number-to-words conversion function here */}
+                  {formatCurrency(form.amount)}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

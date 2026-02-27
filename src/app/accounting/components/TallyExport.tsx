@@ -1,174 +1,429 @@
 'use client'
 import { useState } from 'react'
-import { supabaseProd } from '@/lib/supabase-prod'
-import { formatCurrency, formatDate } from '@/lib/utils'
-import { Download, FileText, Calendar, CheckCircle } from 'lucide-react'
+import { createClient } from '@supabase/supabase-js'
+import { formatDate } from '@/lib/utils'
+import { Download, FileText, Calendar } from 'lucide-react'
+
+// Use correct Supabase credentials
+const supabase = createClient(
+  'https://tegvsgjhxrfddwpbgrzz.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlZ3ZzZ2poeHJmZGR3cGJncnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDU1NDIsImV4cCI6MjA4NzY4MTU0Mn0.WjKDFe5NueYvfenpqlRHbHQwuDSW9ogGILglCSxj0EM'
+)
+
+interface VoucherExportData {
+  voucher_number: string
+  voucher_date: string
+  type: string
+  narration: string
+  total_amount: number
+  entries: Array<{
+    account_name: string
+    debit?: number
+    credit?: number
+    narration: string
+  }>
+}
 
 export default function TallyExport() {
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [voucherType, setVoucherType] = useState('all')
+  const [fromDate, setFromDate] = useState(() => {
+    const date = new Date()
+    date.setDate(1) // First day of current month
+    return date.toISOString().split('T')[0]
+  })
+  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0])
+  const [selectedLocation, setSelectedLocation] = useState<number>(1)
   const [loading, setLoading] = useState(false)
-  const [xmlPreview, setXmlPreview] = useState('')
-  const [stats, setStats] = useState<any>(null)
+  const [exportCount, setExportCount] = useState<number>(0)
 
-  const generateTallyXML = (vouchers: any[]) => {
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<ENVELOPE>\n<HEADER>\n<TALLYREQUEST>Import Data</TALLYREQUEST>\n</HEADER>\n<BODY>\n<IMPORTDATA>\n<REQUESTDESC>\n<REPORTNAME>Vouchers</REPORTNAME>\n<STATICVARIABLES>\n<SVCURRENTCOMPANY>Hope Hospital</SVCURRENTCOMPANY>\n</STATICVARIABLES>\n</REQUESTDESC>\n<REQUESTDATA>\n`
+  const fetchVoucherData = async (): Promise<VoucherExportData[]> => {
+    // Fetch voucher logs with entries
+    const { data: vouchers, error } = await supabase
+      .from('voucher_logs')
+      .select(`
+        voucher_number,
+        voucher_date,
+        type,
+        narration,
+        total_amount,
+        voucher_entries!inner(
+          debit,
+          credit,
+          narration,
+          chart_of_accounts!inner(name)
+        )
+      `)
+      .eq('location_id', selectedLocation)
+      .gte('voucher_date', fromDate)
+      .lte('voucher_date', toDate)
+      .eq('is_deleted', false)
+      .order('voucher_date', { ascending: true })
 
-    for (const v of vouchers) {
-      const type = v.voucher_type || 'Journal'
-      const date = v.date ? new Date(v.date).toISOString().slice(0, 10).replace(/-/g, '') : ''
-      xml += `<TALLYMESSAGE xmlns:UDF="TallyUDF">\n`
-      xml += `<VOUCHER VCHTYPE="${type}" ACTION="Create">\n`
-      xml += `<DATE>${date}</DATE>\n`
-      xml += `<VOUCHERTYPENAME>${type}</VOUCHERTYPENAME>\n`
-      xml += `<NARRATION>${v.narration || v.description || ''}</NARRATION>\n`
-      xml += `<VOUCHERNUMBER>${v.voucher_number || v.id || ''}</VOUCHERNUMBER>\n`
-      
-      if (v.debit_account) {
-        xml += `<ALLLEDGERENTRIES.LIST>\n`
-        xml += `<LEDGERNAME>${v.debit_account}</LEDGERNAME>\n`
-        xml += `<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>\n`
-        xml += `<AMOUNT>-${v.amount || 0}</AMOUNT>\n`
-        xml += `</ALLLEDGERENTRIES.LIST>\n`
+    if (error) throw error
+
+    // Group entries by voucher
+    const groupedVouchers: Record<string, VoucherExportData> = {}
+
+    vouchers?.forEach((voucher: any) => {
+      if (!groupedVouchers[voucher.voucher_number]) {
+        groupedVouchers[voucher.voucher_number] = {
+          voucher_number: voucher.voucher_number,
+          voucher_date: voucher.voucher_date,
+          type: voucher.type,
+          narration: voucher.narration,
+          total_amount: voucher.total_amount,
+          entries: []
+        }
       }
-      if (v.credit_account) {
-        xml += `<ALLLEDGERENTRIES.LIST>\n`
-        xml += `<LEDGERNAME>${v.credit_account}</LEDGERNAME>\n`
-        xml += `<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n`
-        xml += `<AMOUNT>${v.amount || 0}</AMOUNT>\n`
-        xml += `</ALLLEDGERENTRIES.LIST>\n`
-      }
-      
-      xml += `</VOUCHER>\n</TALLYMESSAGE>\n`
-    }
-    xml += `</REQUESTDATA>\n</IMPORTDATA>\n</BODY>\n</ENVELOPE>`
+
+      voucher.voucher_entries.forEach((entry: any) => {
+        groupedVouchers[voucher.voucher_number].entries.push({
+          account_name: entry.chart_of_accounts.name,
+          debit: entry.debit || undefined,
+          credit: entry.credit || undefined,
+          narration: entry.narration
+        })
+      })
+    })
+
+    return Object.values(groupedVouchers)
+  }
+
+  const generateTallyXML = (vouchers: VoucherExportData[]): string => {
+    const companyName = selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'
+    
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Day Book</ID>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Day Book</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>${companyName}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+${vouchers.map(voucher => `        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <VOUCHER REMOTEID="${voucher.voucher_number}" VCHKEY="${voucher.voucher_number}" VCHTYPE="${voucher.type}" ACTION="Create">
+            <VOUCHERTYPENAME>${voucher.type}</VOUCHERTYPENAME>
+            <VOUCHERNUMBER>${voucher.voucher_number}</VOUCHERNUMBER>
+            <DATE>${formatTallyDate(voucher.voucher_date)}</DATE>
+            <NARRATION>${escapeXML(voucher.narration)}</NARRATION>
+            <VCHGSTCLASS/>
+            <ENTEREDBY>HMS System</ENTEREDBY>
+            <DIFFACTUALQTY>No</DIFFACTUALQTY>
+            <AUDITED>No</AUDITED>
+            <FORJOBCOSTING>No</FORJOBCOSTING>
+            <ISOPTIONAL>No</ISOPTIONAL>
+            <EFFECTIVEDATE>${formatTallyDate(voucher.voucher_date)}</EFFECTIVEDATE>
+            <USEFORINTEREST>No</USEFORINTEREST>
+            <USEFORGAINLOSS>No</USEFORGAINLOSS>
+            <USEFORGODOWNTRANSFER>No</USEFORGODOWNTRANSFER>
+            <USEFORCOMPOUND>No</USEFORCOMPOUND>
+            <ALTERID>1</ALTERID>
+            <MASTERID>1</MASTERID>
+            <VOUCHERKEY>1</VOUCHERKEY>
+${voucher.entries.map((entry, index) => `            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>${escapeXML(entry.account_name)}</LEDGERNAME>
+              <GSTCLASS/>
+              <ISDEEMEDPOSITIVE>${entry.debit ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE>
+              <LEDGERFROMITEM>No</LEDGERFROMITEM>
+              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+              <ISPARTYLEDGER>No</ISPARTYLEDGER>
+              <AMOUNT>${entry.debit ? entry.debit : entry.credit ? -entry.credit : 0}</AMOUNT>
+              <SERVICETAXDETAILS.LIST>       </SERVICETAXDETAILS.LIST>
+              <BANKALLOCATIONS.LIST>       </BANKALLOCATIONS.LIST>
+              <BILLALLOCATIONS.LIST>       </BILLALLOCATIONS.LIST>
+              <INTERESTCOLLECTION.LIST>       </INTERESTCOLLECTION.LIST>
+              <OLDAUDITENTRIES.LIST>       </OLDAUDITENTRIES.LIST>
+              <ACCOUNTAUDITENTRIES.LIST>       </ACCOUNTAUDITENTRIES.LIST>
+              <AUDITENTRIES.LIST>       </AUDITENTRIES.LIST>
+              <INPUTCRALLOCS.LIST>       </INPUTCRALLOCS.LIST>
+              <DUTYHEADDETAILS.LIST>       </DUTYHEADDETAILS.LIST>
+              <EXCISEDUTYHEADDETAILS.LIST>       </EXCISEDUTYHEADDETAILS.LIST>
+              <RATEDETAILS.LIST>       </RATEDETAILS.LIST>
+              <SUPPLEMENTARYDUTYHEADDETAILS.LIST>       </SUPPLEMENTARYDUTYHEADDETAILS.LIST>
+              <TAXOBJECTALLOCATIONS.LIST>       </TAXOBJECTALLOCATIONS.LIST>
+              <VATDETAILS.LIST>       </VATDETAILS.LIST>
+              <COSTTRACKALLOCATIONS.LIST>       </COSTTRACKALLOCATIONS.LIST>
+              <REFVOUCHERDETAILS.LIST>       </REFVOUCHERDETAILS.LIST>
+              <INVOICEWISEDETAILS.LIST>       </INVOICEWISEDETAILS.LIST>
+              <VATITCDETAILS.LIST>       </VATITCDETAILS.LIST>
+              <ADVANCETAXDETAILS.LIST>       </ADVANCETAXDETAILS.LIST>
+            </LEDGERENTRIES.LIST>`).join('\n')}
+          </VOUCHER>
+        </TALLYMESSAGE>`).join('\n')}
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`
+
     return xml
   }
 
+  const formatTallyDate = (dateStr: string): string => {
+    const date = new Date(dateStr)
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}${month}${day}`
+  }
+
+  const escapeXML = (str: string): string => {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+  }
+
   const handleExport = async () => {
+    if (!fromDate || !toDate) {
+      alert('Please select both from and to dates')
+      return
+    }
+
+    if (new Date(fromDate) > new Date(toDate)) {
+      alert('From date cannot be later than to date')
+      return
+    }
+
     setLoading(true)
     try {
-      let query = supabaseProd.from('vouchers').select('*')
-      if (dateFrom) query = query.gte('date', dateFrom)
-      if (dateTo) query = query.lte('date', dateTo)
-      if (voucherType !== 'all') query = query.eq('voucher_type', voucherType)
-      query = query.order('date', { ascending: true })
-
-      const { data, error } = await query
-      if (error) throw error
-
-      const vouchers = data || []
-      setStats({
-        total: vouchers.length,
-        journal: vouchers.filter((v: any) => v.voucher_type === 'Journal').length,
-        receipt: vouchers.filter((v: any) => v.voucher_type === 'Receipt').length,
-        payment: vouchers.filter((v: any) => v.voucher_type === 'Payment').length,
-        contra: vouchers.filter((v: any) => v.voucher_type === 'Contra').length,
-      })
+      const vouchers = await fetchVoucherData()
+      
+      if (vouchers.length === 0) {
+        alert('No voucher entries found for the selected date range')
+        return
+      }
 
       const xml = generateTallyXML(vouchers)
-      setXmlPreview(xml.substring(0, 2000) + (xml.length > 2000 ? '\n... (truncated)' : ''))
-      
-      // Auto download
       const blob = new Blob([xml], { type: 'application/xml' })
       const url = URL.createObjectURL(blob)
+      
       const a = document.createElement('a')
       a.href = url
-      a.download = `tally-export-${dateFrom || 'all'}-to-${dateTo || 'all'}.xml`
+      a.download = `tally-export-${selectedLocation === 1 ? 'hope' : 'ayushman'}-${fromDate}-to-${toDate}.xml`
       a.click()
+      
       URL.revokeObjectURL(url)
-    } catch (e) {
-      console.error('Export error:', e)
+      setExportCount(vouchers.length)
+      
+      // Show success message
+      alert(`Successfully exported ${vouchers.length} vouchers to Tally XML format`)
+    } catch (error) {
+      console.error('Error exporting to Tally:', error)
+      alert('Error generating Tally export. Please try again.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
+  }
+
+  const handlePreview = async () => {
+    if (!fromDate || !toDate) {
+      alert('Please select both from and to dates')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const vouchers = await fetchVoucherData()
+      setExportCount(vouchers.length)
+    } catch (error) {
+      console.error('Error fetching voucher data:', error)
+      alert('Error fetching voucher data. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="p-2.5 bg-orange-50 rounded-lg text-orange-600">
-          <FileText className="w-5 h-5" />
+    <div className="space-y-6 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <FileText className="w-7 h-7 text-orange-600" />
+          Tally Export
+        </h1>
+      </div>
+
+      {/* Instructions */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-blue-900 mb-3">How to Import into Tally</h3>
+        <div className="space-y-2 text-blue-800">
+          <p>1. Generate and download the XML file using the form below</p>
+          <p>2. Open Tally ERP and go to Gateway of Tally</p>
+          <p>3. Go to Import Data → Vouchers</p>
+          <p>4. Select the downloaded XML file</p>
+          <p>5. Verify the import and accept the vouchers</p>
         </div>
-        <div>
-          <h2 className="text-xl font-bold text-gray-900">Tally Export</h2>
-          <p className="text-sm text-gray-500">Export vouchers in Tally XML format for import</p>
+        <div className="mt-4 p-3 bg-blue-100 rounded border border-blue-300">
+          <p className="text-sm text-blue-700">
+            <strong>Note:</strong> Make sure all the chart of accounts (ledgers) exist in your Tally 
+            company before importing. The system will map accounts by name.
+          </p>
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Export Form */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="font-semibold text-gray-900 mb-4">Export Settings</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <h3 className="text-lg font-semibold text-gray-900 mb-6">Export Parameters</h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Voucher Type</label>
-            <select value={voucherType} onChange={e => setVoucherType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent">
-              <option value="all">All Types</option>
-              <option value="Journal">Journal</option>
-              <option value="Receipt">Receipt</option>
-              <option value="Payment">Payment</option>
-              <option value="Contra">Contra</option>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Location *</label>
+            <select
+              value={selectedLocation}
+              onChange={(e) => setSelectedLocation(Number(e.target.value))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value={1}>Hope Hospital</option>
+              <option value={2}>Ayushman Hospital</option>
             </select>
           </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">From Date *</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">To Date *</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          
+          <div className="flex items-end">
+            <button
+              onClick={handlePreview}
+              disabled={loading}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <Calendar className="w-4 h-4" />
+              Preview Count
+            </button>
+          </div>
         </div>
-        <button onClick={handleExport} disabled={loading}
-          className="mt-4 px-6 py-2.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white font-medium rounded-lg flex items-center gap-2 transition-colors">
-          <Download className="w-4 h-4" />
-          {loading ? 'Generating...' : 'Generate & Download Tally XML'}
-        </button>
+
+        {/* Preview Results */}
+        {exportCount > 0 && (
+          <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-green-800 font-medium">
+                  Found {exportCount} voucher{exportCount !== 1 ? 's' : ''} for export
+                </p>
+                <p className="text-green-600 text-sm mt-1">
+                  Date range: {formatDate(fromDate)} to {formatDate(toDate)} • 
+                  Location: {selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}
+                </p>
+              </div>
+              <button
+                onClick={handleExport}
+                disabled={loading}
+                className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <Download className="w-5 h-5" />
+                {loading ? 'Generating...' : 'Download XML'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {[
-            { label: 'Total', value: stats.total, color: 'blue' },
-            { label: 'Journal', value: stats.journal, color: 'purple' },
-            { label: 'Receipt', value: stats.receipt, color: 'green' },
-            { label: 'Payment', value: stats.payment, color: 'red' },
-            { label: 'Contra', value: stats.contra, color: 'orange' },
-          ].map(s => (
-            <div key={s.label} className={`bg-${s.color}-50 rounded-xl p-4 border border-${s.color}-100`}>
-              <p className="text-2xl font-bold text-gray-900">{s.value}</p>
-              <p className="text-xs text-gray-500">{s.label} Vouchers</p>
-            </div>
-          ))}
+      {/* Tally XML Format Info */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Export Format Details</h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <h4 className="font-medium text-gray-900 mb-3">Voucher Types Included:</h4>
+            <ul className="space-y-1 text-sm text-gray-600">
+              <li>• Receipt Vouchers (Patient payments)</li>
+              <li>• Payment Vouchers (Hospital expenses)</li>
+              <li>• Journal Vouchers (Adjustments)</li>
+              <li>• Contra Vouchers (Fund transfers)</li>
+            </ul>
+          </div>
+          
+          <div>
+            <h4 className="font-medium text-gray-900 mb-3">Data Fields Exported:</h4>
+            <ul className="space-y-1 text-sm text-gray-600">
+              <li>• Voucher number and date</li>
+              <li>• Account (Ledger) names</li>
+              <li>• Debit and credit amounts</li>
+              <li>• Narration/Description</li>
+              <li>• Company information</li>
+            </ul>
+          </div>
         </div>
-      )}
 
-      {/* XML Preview */}
-      {xmlPreview && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 text-green-500" /> XML Preview
-          </h3>
-          <pre className="bg-gray-50 rounded-lg p-4 text-xs text-gray-700 overflow-auto max-h-64 border">
-            {xmlPreview}
+        <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <h4 className="font-medium text-yellow-800 mb-2">Important Requirements:</h4>
+          <ul className="space-y-1 text-sm text-yellow-700">
+            <li>• All account names in the export must exist as Ledgers in your Tally company</li>
+            <li>• Voucher types (Receipt, Payment, Journal, Contra) should be configured in Tally</li>
+            <li>• The company name in Tally should match the location name</li>
+            <li>• Ensure no duplicate voucher numbers exist in Tally for the same period</li>
+          </ul>
+        </div>
+      </div>
+
+      {/* Sample XML Preview */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Sample XML Structure</h3>
+        
+        <div className="bg-gray-50 rounded-lg p-4 overflow-x-auto">
+          <pre className="text-xs text-gray-600 font-mono">
+{`<?xml version="1.0" encoding="UTF-8"?>
+<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Day Book</ID>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDATA>
+        <TALLYMESSAGE>
+          <VOUCHER VCHTYPE="Receipt" ACTION="Create">
+            <VOUCHERNUMBER>RV20260227001</VOUCHERNUMBER>
+            <DATE>20260227</DATE>
+            <NARRATION>Patient payment received</NARRATION>
+            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>Cash</LEDGERNAME>
+              <AMOUNT>1000</AMOUNT>
+            </LEDGERENTRIES.LIST>
+            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>Patient Receivables</LEDGERNAME>
+              <AMOUNT>-1000</AMOUNT>
+            </LEDGERENTRIES.LIST>
+          </VOUCHER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`}
           </pre>
         </div>
-      )}
-
-      {/* Help */}
-      <div className="bg-amber-50 rounded-xl border border-amber-200 p-4">
-        <h4 className="font-medium text-amber-800 mb-2">How to Import in Tally</h4>
-        <ol className="text-sm text-amber-700 space-y-1 list-decimal list-inside">
-          <li>Open Tally ERP 9 / Tally Prime</li>
-          <li>Go to Gateway → Import Data</li>
-          <li>Select the downloaded XML file</li>
-          <li>Verify the vouchers imported correctly</li>
-          <li>Check Day Book for imported entries</li>
-        </ol>
+        
+        <p className="text-xs text-gray-500 mt-3">
+          This is a simplified sample. The actual export includes all required Tally XML tags and formatting.
+        </p>
       </div>
     </div>
   )

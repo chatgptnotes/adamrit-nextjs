@@ -1,426 +1,405 @@
 'use client'
-import { useState, useEffect } from 'react'
-import { supabaseProd } from '@/lib/supabase-prod'
+import React, { useState, useEffect } from 'react'
+import { getTrialBalance } from '@/lib/accounting-engine'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import DataTable from '@/components/DataTable'
-import { ArrowDownCircle, Calendar, Calculator, Printer, BarChart3 } from 'lucide-react'
+import { Scale, Calendar, Printer, Download, AlertCircle, CheckCircle } from 'lucide-react'
+
+interface TrialBalanceEntry {
+  account_id: number
+  account_name: string
+  account_type: string
+  total_debit: number
+  total_credit: number
+}
 
 export default function TrialBalance() {
-  const [trialBalanceData, setTrialBalanceData] = useState<any[]>([])
+  const [entries, setEntries] = useState<TrialBalanceEntry[]>([])
   const [loading, setLoading] = useState(false)
-  const [selectedLocation, setSelectedLocation] = useState<number>(1)
-  const [asOnDate, setAsOnDate] = useState(new Date().toISOString().split('T')[0])
-  const [totals, setTotals] = useState({
-    totalDebit: 0,
-    totalCredit: 0,
-    isBalanced: false
+  const [fromDate, setFromDate] = useState(() => {
+    const date = new Date()
+    date.setDate(1) // First day of current month
+    return date.toISOString().split('T')[0]
   })
+  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0])
+  const [selectedLocation, setSelectedLocation] = useState<number>(1)
 
   useEffect(() => {
-    generateTrialBalance()
-  }, [selectedLocation, asOnDate])
+    loadTrialBalance()
+  }, [fromDate, toDate, selectedLocation])
 
-  const generateTrialBalance = async () => {
+  const loadTrialBalance = async () => {
     setLoading(true)
     try {
-      // Fetch all chart of accounts
-      const { data: accounts } = await supabaseProd
-        .from('chart_of_accounts')
-        .select('*')
-        .order('name', { ascending: true })
-
-      // Fetch all voucher entries up to the selected date
-      const { data: entries } = await supabaseProd
-        .from('voucher_entries')
-        .select(`
-          *,
-          vouchers (location_id),
-          chart_of_accounts (name, account_type)
-        `)
-        .lte('date', asOnDate)
-
-      // Filter entries by location
-      const locationEntries = entries?.filter(entry => 
-        entry.vouchers?.location_id === selectedLocation
-      ) || []
-
-      // Fetch account receipts up to the selected date
-      const { data: receipts } = await supabaseProd
-        .from('account_receipts')
-        .select('*')
-        .eq('location_id', selectedLocation)
-        .lte('date', asOnDate)
-
-      // Calculate balances for each account
-      const accountBalances = new Map()
-
-      // Process voucher entries
-      locationEntries.forEach(entry => {
-        const accountId = entry.account_id
-        const existing = accountBalances.get(accountId) || {
-          id: accountId,
-          name: entry.chart_of_accounts?.name || `Account ${accountId}`,
-          account_type: entry.chart_of_accounts?.account_type || 'Other',
-          debit: 0,
-          credit: 0,
-          balance: 0
-        }
-
-        existing.debit += entry.debit || 0
-        existing.credit += entry.credit || 0
-        accountBalances.set(accountId, existing)
-      })
-
-      // Add cash receipts to appropriate accounts (assuming cash account or sales account)
-      if (receipts && receipts.length > 0) {
-        const cashReceiptTotal = receipts.reduce((sum, r) => sum + (r.amount || 0), 0)
-        
-        // Find cash account or create a default one
-        const cashAccount = accounts?.find(acc => 
-          acc.name?.toLowerCase().includes('cash')
-        )
-
-        if (cashAccount) {
-          const existing = accountBalances.get(cashAccount.id) || {
-            id: cashAccount.id,
-            name: cashAccount.name,
-            account_type: cashAccount.account_type,
-            debit: 0,
-            credit: 0,
-            balance: 0
-          }
-          existing.debit += cashReceiptTotal
-          accountBalances.set(cashAccount.id, existing)
-
-          // Also add to income/sales account
-          const salesAccount = accounts?.find(acc => 
-            acc.name?.toLowerCase().includes('sales') || 
-            acc.name?.toLowerCase().includes('income')
-          )
-
-          if (salesAccount) {
-            const salesExisting = accountBalances.get(salesAccount.id) || {
-              id: salesAccount.id,
-              name: salesAccount.name,
-              account_type: salesAccount.account_type,
-              debit: 0,
-              credit: 0,
-              balance: 0
-            }
-            salesExisting.credit += cashReceiptTotal
-            accountBalances.set(salesAccount.id, salesExisting)
-          }
-        }
-      }
-
-      // Calculate net balance for each account
-      const trialBalanceEntries = Array.from(accountBalances.values())
-        .map(acc => {
-          const netBalance = acc.debit - acc.credit
-          return {
-            ...acc,
-            balance: netBalance,
-            debitBalance: netBalance > 0 ? netBalance : 0,
-            creditBalance: netBalance < 0 ? Math.abs(netBalance) : 0
-          }
-        })
-        .filter(acc => acc.debitBalance > 0 || acc.creditBalance > 0) // Only show accounts with balances
-        .sort((a, b) => a.name.localeCompare(b.name))
-
-      // Calculate totals
-      const totalDebit = trialBalanceEntries.reduce((sum, acc) => sum + acc.debitBalance, 0)
-      const totalCredit = trialBalanceEntries.reduce((sum, acc) => sum + acc.creditBalance, 0)
-      const isBalanced = Math.abs(totalDebit - totalCredit) < 0.01
-
-      setTrialBalanceData(trialBalanceEntries)
-      setTotals({
-        totalDebit,
-        totalCredit,
-        isBalanced
-      })
-
+      const trialBalanceData = await getTrialBalance(fromDate, toDate, selectedLocation)
+      setEntries(trialBalanceData)
     } catch (error) {
-      console.error('Error generating trial balance:', error)
+      console.error('Error loading trial balance:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const columns = [
-    { 
-      key: 'name', 
-      label: 'Account Name',
-      render: (r: any) => (
-        <div>
-          <span className="font-medium">{r.name}</span>
-          <div className="text-xs text-gray-500">{r.account_type}</div>
-        </div>
-      )
-    },
-    { 
-      key: 'debitBalance', 
-      label: 'Debit Balance',
-      render: (r: any) => r.debitBalance > 0 ? 
-        <span className="font-medium text-red-600">{formatCurrency(r.debitBalance)}</span> : '—'
-    },
-    { 
-      key: 'creditBalance', 
-      label: 'Credit Balance',
-      render: (r: any) => r.creditBalance > 0 ? 
-        <span className="font-medium text-green-600">{formatCurrency(r.creditBalance)}</span> : '—'
+  const getTotalDebits = () => {
+    return entries.reduce((sum, entry) => sum + entry.total_debit, 0)
+  }
+
+  const getTotalCredits = () => {
+    return entries.reduce((sum, entry) => sum + entry.total_credit, 0)
+  }
+
+  const isBalanced = () => {
+    const debitTotal = getTotalDebits()
+    const creditTotal = getTotalCredits()
+    return Math.abs(debitTotal - creditTotal) < 0.01
+  }
+
+  const getDifferenceAmount = () => {
+    return Math.abs(getTotalDebits() - getTotalCredits())
+  }
+
+  const groupedEntries = entries.reduce((acc, entry) => {
+    if (!acc[entry.account_type]) {
+      acc[entry.account_type] = []
     }
-  ]
+    acc[entry.account_type].push(entry)
+    return acc
+  }, {} as Record<string, TrialBalanceEntry[]>)
 
-  const printTrialBalance = () => {
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) return
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Trial Balance - ${formatDate(asOnDate)}</title>
-          <style>
-            @media print {
-              body { margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
-              .trial-balance { max-width: 800px; margin: 20px auto; }
-              .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px; }
-              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-              th, td { border: 1px solid #333; padding: 8px; text-align: left; }
-              th { background-color: #f5f5f5; font-weight: bold; }
-              .number { text-align: right; }
-              .total { font-weight: bold; border-top: 2px solid #333; }
-              .balanced { color: green; }
-              .unbalanced { color: red; }
-              @page { size: A4 portrait; margin: 0.5in; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="trial-balance">
-            <div class="header">
-              <h2>${selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}</h2>
-              <h3>Trial Balance</h3>
-              <p>As on ${formatDate(asOnDate)}</p>
-            </div>
-            
-            <table>
-              <thead>
+  const handlePrint = () => {
+    const printContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px;">
+          <h2 style="margin: 0;">${selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}</h2>
+          <h3 style="margin: 5px 0;">TRIAL BALANCE</h3>
+          <p style="margin: 5px 0;">From ${formatDate(fromDate)} to ${formatDate(toDate)}</p>
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+          <thead>
+            <tr style="background-color: #f5f5f5;">
+              <th style="border: 1px solid #000; padding: 8px; text-align: left; width: 50%;">Account Name</th>
+              <th style="border: 1px solid #000; padding: 8px; text-align: right; width: 25%;">Debit</th>
+              <th style="border: 1px solid #000; padding: 8px; text-align: right; width: 25%;">Credit</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${Object.entries(groupedEntries).map(([accountType, typeEntries]) => `
+              <tr style="background-color: #f9f9f9;">
+                <td colspan="3" style="border: 1px solid #000; padding: 8px; font-weight: bold; text-transform: uppercase;">
+                  ${accountType}
+                </td>
+              </tr>
+              ${typeEntries.map(entry => `
                 <tr>
-                  <th>Account Name</th>
-                  <th>Account Type</th>
-                  <th class="number">Debit Balance</th>
-                  <th class="number">Credit Balance</th>
+                  <td style="border: 1px solid #000; padding: 8px; padding-left: 20px;">${entry.account_name}</td>
+                  <td style="border: 1px solid #000; padding: 8px; text-align: right;">
+                    ${entry.total_debit > 0 ? formatCurrency(entry.total_debit) : '—'}
+                  </td>
+                  <td style="border: 1px solid #000; padding: 8px; text-align: right;">
+                    ${entry.total_credit > 0 ? formatCurrency(entry.total_credit) : '—'}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                ${trialBalanceData.map(acc => `
-                  <tr>
-                    <td>${acc.name}</td>
-                    <td>${acc.account_type}</td>
-                    <td class="number">${acc.debitBalance > 0 ? formatCurrency(acc.debitBalance) : '—'}</td>
-                    <td class="number">${acc.creditBalance > 0 ? formatCurrency(acc.creditBalance) : '—'}</td>
-                  </tr>
-                `).join('')}
-                <tr class="total">
-                  <td colspan="2"><strong>TOTAL</strong></td>
-                  <td class="number"><strong>${formatCurrency(totals.totalDebit)}</strong></td>
-                  <td class="number"><strong>${formatCurrency(totals.totalCredit)}</strong></td>
-                </tr>
-              </tbody>
-            </table>
-            
-            <div style="text-align: center; margin-top: 20px;">
-              <p class="${totals.isBalanced ? 'balanced' : 'unbalanced'}">
-                <strong>
-                  ${totals.isBalanced ? 
-                    '✓ Trial Balance is BALANCED' : 
-                    '⚠ Trial Balance is NOT BALANCED'
-                  }
-                </strong>
-              </p>
-              ${!totals.isBalanced ? `
-                <p style="color: red; font-size: 11px;">
-                  Difference: ${formatCurrency(Math.abs(totals.totalDebit - totals.totalCredit))}
-                </p>
-              ` : ''}
-            </div>
-            
-            <div style="margin-top: 40px; font-size: 10px; text-align: center; color: #666;">
-              Generated on ${new Date().toLocaleString('en-IN')}
-            </div>
-          </div>
-        </body>
-      </html>
+              `).join('')}
+            `).join('')}
+            <tr style="background-color: #e5e5e5; font-weight: bold; font-size: 16px;">
+              <td style="border: 2px solid #000; padding: 12px; text-align: center;">TOTAL</td>
+              <td style="border: 2px solid #000; padding: 12px; text-align: right;">${formatCurrency(getTotalDebits())}</td>
+              <td style="border: 2px solid #000; padding: 12px; text-align: right;">${formatCurrency(getTotalCredits())}</td>
+            </tr>
+            ${!isBalanced() ? `
+              <tr style="background-color: #ffe5e5; font-weight: bold;">
+                <td style="border: 1px solid #000; padding: 8px; text-align: center;">DIFFERENCE</td>
+                <td style="border: 1px solid #000; padding: 8px; text-align: right;">
+                  ${getTotalDebits() > getTotalCredits() ? '—' : formatCurrency(getDifferenceAmount())}
+                </td>
+                <td style="border: 1px solid #000; padding: 8px; text-align: right;">
+                  ${getTotalCredits() > getTotalDebits() ? '—' : formatCurrency(getDifferenceAmount())}
+                </td>
+              </tr>
+            ` : ''}
+          </tbody>
+        </table>
+        
+        <div style="margin-top: 20px;">
+          <p><strong>Status:</strong> ${isBalanced() ? 'BALANCED' : 'NOT BALANCED'}</p>
+          ${!isBalanced() ? `<p style="color: red;"><strong>Difference:</strong> ${formatCurrency(getDifferenceAmount())}</p>` : ''}
+          <p><strong>Generated on:</strong> ${formatDate(new Date().toISOString().split('T')[0])}</p>
+        </div>
+      </div>
     `
+    
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
+      printWindow.close()
+    }
+  }
 
-    printWindow.document.write(html)
-    printWindow.document.close()
-    printWindow.print()
+  const handleExportCSV = () => {
+    if (entries.length === 0) {
+      alert('No data to export')
+      return
+    }
+
+    const headers = ['Account Type', 'Account Name', 'Debit', 'Credit']
+    const csvData = [headers]
+    
+    Object.entries(groupedEntries).forEach(([accountType, typeEntries]) => {
+      // Add account type header
+      csvData.push([accountType.toUpperCase(), '', '', ''])
+      
+      // Add entries for this type
+      typeEntries.forEach(entry => {
+        csvData.push([
+          '',
+          entry.account_name,
+          entry.total_debit > 0 ? entry.total_debit.toString() : '',
+          entry.total_credit > 0 ? entry.total_credit.toString() : ''
+        ])
+      })
+      
+      // Add empty row for separation
+      csvData.push(['', '', '', ''])
+    })
+    
+    // Add totals
+    csvData.push(['TOTAL', '', getTotalDebits().toString(), getTotalCredits().toString()])
+    
+    if (!isBalanced()) {
+      csvData.push([
+        'DIFFERENCE',
+        '',
+        getTotalDebits() > getTotalCredits() ? '' : getDifferenceAmount().toString(),
+        getTotalCredits() > getTotalDebits() ? '' : getDifferenceAmount().toString()
+      ])
+    }
+    
+    const csvContent = csvData.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `trial-balance-${fromDate}-to-${toDate}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="p-2.5 bg-indigo-50 rounded-lg text-indigo-600">
-          <ArrowDownCircle className="w-5 h-5" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Trial Balance</h2>
-          <p className="text-sm text-gray-500">All accounts with debit/credit totals</p>
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="bg-white p-6 rounded-xl border border-gray-200">
-        <div className="flex flex-wrap items-end gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Location
-            </label>
-            <select 
-              value={selectedLocation} 
-              onChange={(e) => setSelectedLocation(Number(e.target.value))}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value={1}>Hope Hospital</option>
-              <option value={2}>Ayushman Hospital</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              As on Date
-            </label>
-            <input
-              type="date"
-              value={asOnDate}
-              onChange={(e) => setAsOnDate(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <Scale className="w-7 h-7 text-indigo-600" />
+          Trial Balance
+        </h1>
+        <div className="flex items-center gap-3">
           <button
-            onClick={generateTrialBalance}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
-          >
-            <Calculator className="w-4 h-4" />
-            Generate
-          </button>
-
-          <button
-            onClick={printTrialBalance}
-            disabled={trialBalanceData.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors disabled:opacity-50"
+            onClick={handlePrint}
+            disabled={entries.length === 0}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             <Printer className="w-4 h-4" />
             Print
+          </button>
+          <button
+            onClick={handleExportCSV}
+            disabled={entries.length === 0}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            Export CSV
           </button>
         </div>
       </div>
 
       {/* Balance Status */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-          <div className="flex items-center gap-2 mb-2">
-            <ArrowDownCircle className="w-4 h-4 text-red-600" />
-            <span className="text-sm font-medium text-red-700">Total Debit</span>
-          </div>
-          <span className="text-xl font-semibold text-red-900">
-            {formatCurrency(totals.totalDebit)}
-          </span>
-        </div>
-
-        <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-          <div className="flex items-center gap-2 mb-2">
-            <ArrowDownCircle className="w-4 h-4 text-green-600 rotate-180" />
-            <span className="text-sm font-medium text-green-700">Total Credit</span>
-          </div>
-          <span className="text-xl font-semibold text-green-900">
-            {formatCurrency(totals.totalCredit)}
-          </span>
-        </div>
-
-        <div className={`p-4 rounded-lg border ${
-          totals.isBalanced 
-            ? 'bg-blue-50 border-blue-200' 
-            : 'bg-yellow-50 border-yellow-200'
+      {entries.length > 0 && (
+        <div className={`rounded-lg border p-4 ${
+          isBalanced() 
+            ? 'bg-green-50 border-green-200' 
+            : 'bg-red-50 border-red-200'
         }`}>
-          <div className="flex items-center gap-2 mb-2">
-            <BarChart3 className={`w-4 h-4 ${
-              totals.isBalanced ? 'text-blue-600' : 'text-yellow-600'
-            }`} />
-            <span className={`text-sm font-medium ${
-              totals.isBalanced ? 'text-blue-700' : 'text-yellow-700'
-            }`}>
-              Balance Status
-            </span>
+          <div className="flex items-center gap-2">
+            {isBalanced() ? (
+              <>
+                <CheckCircle className="w-5 h-5 text-green-600" />
+                <span className="text-green-700 font-medium">
+                  Trial Balance is BALANCED! Total: {formatCurrency(getTotalDebits())}
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-5 h-5 text-red-600" />
+                <span className="text-red-700 font-medium">
+                  Trial Balance is NOT BALANCED! Difference: {formatCurrency(getDifferenceAmount())}
+                  (Debits: {formatCurrency(getTotalDebits())}, Credits: {formatCurrency(getTotalCredits())})
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
+            <select
+              value={selectedLocation}
+              onChange={(e) => setSelectedLocation(Number(e.target.value))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value={1}>Hope Hospital</option>
+              <option value={2}>Ayushman Hospital</option>
+            </select>
           </div>
           <div>
-            <span className={`text-lg font-semibold ${
-              totals.isBalanced ? 'text-blue-900' : 'text-yellow-900'
-            }`}>
-              {totals.isBalanced ? '✓ Balanced' : '⚠ Not Balanced'}
-            </span>
-            {!totals.isBalanced && (
-              <div className="text-sm text-yellow-700 mt-1">
-                Diff: {formatCurrency(Math.abs(totals.totalDebit - totals.totalCredit))}
-              </div>
-            )}
+            <label className="block text-sm font-medium text-gray-700 mb-2">From Date</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">To Date</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          <div className="flex items-end">
+            <button
+              onClick={loadTrialBalance}
+              className="w-full px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2"
+            >
+              <Calendar className="w-4 h-4" />
+              Refresh
+            </button>
           </div>
         </div>
       </div>
 
       {/* Trial Balance Table */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">
-            Trial Balance as on {formatDate(asOnDate)} - {selectedLocation === 1 ? 'Hope Hospital' : 'Ayushman Hospital'}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Trial Balance from {formatDate(fromDate)} to {formatDate(toDate)}
           </h3>
         </div>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left py-4 px-6 font-semibold text-gray-700 w-1/2">Account Name</th>
+                <th className="text-right py-4 px-6 font-semibold text-gray-700 w-1/4">Debit</th>
+                <th className="text-right py-4 px-6 font-semibold text-gray-700 w-1/4">Credit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={3} className="text-center py-8 text-gray-500">Loading trial balance...</td>
+                </tr>
+              ) : entries.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="text-center py-8 text-gray-500">No transactions found for this period</td>
+                </tr>
+              ) : (
+                Object.entries(groupedEntries).map(([accountType, typeEntries]) => (
+                  <React.Fragment key={accountType}>
+                    {/* Account Type Header */}
+                    <tr className="bg-gray-100 border-t-2 border-gray-300">
+                      <td colSpan={3} className="py-3 px-6 font-bold text-gray-800 uppercase text-sm">
+                        {accountType}
+                      </td>
+                    </tr>
+                    
+                    {/* Accounts in this type */}
+                    {typeEntries.map((entry, index) => (
+                      <tr key={entry.account_id} className={`border-b border-gray-100 hover:bg-gray-50 ${
+                        index % 2 === 0 ? 'bg-white' : 'bg-gray-25'
+                      }`}>
+                        <td className="py-3 px-6 pl-12">{entry.account_name}</td>
+                        <td className="py-3 px-6 text-right">
+                          {entry.total_debit > 0 ? (
+                            <span className="font-semibold text-green-600">{formatCurrency(entry.total_debit)}</span>
+                          ) : '—'}
+                        </td>
+                        <td className="py-3 px-6 text-right">
+                          {entry.total_credit > 0 ? (
+                            <span className="font-semibold text-red-600">{formatCurrency(entry.total_credit)}</span>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))
+              )}
+              
+              {/* Totals Row */}
+              {entries.length > 0 && (
+                <>
+                  <tr className="border-t-2 border-gray-300 bg-gray-100">
+                    <td className="py-4 px-6 font-bold text-gray-900 text-lg">TOTAL</td>
+                    <td className="py-4 px-6 text-right font-bold text-lg text-green-600">
+                      {formatCurrency(getTotalDebits())}
+                    </td>
+                    <td className="py-4 px-6 text-right font-bold text-lg text-red-600">
+                      {formatCurrency(getTotalCredits())}
+                    </td>
+                  </tr>
+                  
+                  {/* Difference Row (if not balanced) */}
+                  {!isBalanced() && (
+                    <tr className="bg-red-50 border-b border-red-200">
+                      <td className="py-3 px-6 font-semibold text-red-700">DIFFERENCE</td>
+                      <td className="py-3 px-6 text-right font-semibold text-red-600">
+                        {getTotalDebits() > getTotalCredits() ? '—' : formatCurrency(getDifferenceAmount())}
+                      </td>
+                      <td className="py-3 px-6 text-right font-semibold text-red-600">
+                        {getTotalCredits() > getTotalDebits() ? '—' : formatCurrency(getDifferenceAmount())}
+                      </td>
+                    </tr>
+                  )}
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
 
-        <DataTable 
-          data={trialBalanceData}
-          columns={columns}
-          loading={loading}
-          searchPlaceholder="Search accounts..."
-          searchKey="name"
-        />
-
-        {/* Totals Row */}
-        {trialBalanceData.length > 0 && (
-          <div className="mt-4 p-4 bg-gray-100 rounded-lg border-t-2 border-gray-300">
-            <div className="grid grid-cols-3 gap-4 font-semibold">
-              <div>
-                <span className="text-gray-900">TOTAL</span>
+        {/* Summary */}
+        {entries.length > 0 && (
+          <div className="p-6 bg-gray-50 border-t border-gray-200">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="text-center">
+                <div className="text-sm text-gray-600">Total Debits</div>
+                <div className="text-xl font-bold text-green-600">
+                  {formatCurrency(getTotalDebits())}
+                </div>
               </div>
-              <div className="text-right">
-                <span className="text-red-600">{formatCurrency(totals.totalDebit)}</span>
+              <div className="text-center">
+                <div className="text-sm text-gray-600">Total Credits</div>
+                <div className="text-xl font-bold text-red-600">
+                  {formatCurrency(getTotalCredits())}
+                </div>
               </div>
-              <div className="text-right">
-                <span className="text-green-600">{formatCurrency(totals.totalCredit)}</span>
+              <div className="text-center">
+                <div className="text-sm text-gray-600">Difference</div>
+                <div className={`text-xl font-bold ${isBalanced() ? 'text-green-600' : 'text-red-600'}`}>
+                  {isBalanced() ? 'BALANCED' : formatCurrency(getDifferenceAmount())}
+                </div>
               </div>
             </div>
           </div>
         )}
-
-        {trialBalanceData.length === 0 && !loading && (
-          <div className="text-center py-8">
-            <BarChart3 className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500">No account balances found for the selected date and location.</p>
-          </div>
-        )}
-      </div>
-
-      {/* Information */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h4 className="font-semibold text-blue-900 mb-2">About Trial Balance</h4>
-        <p className="text-sm text-blue-700">
-          Trial Balance is a statement that shows the total of debit and credit balances of all accounts in the ledger. 
-          It helps verify that the total of all debit balances equals the total of all credit balances, ensuring the 
-          accuracy of the double-entry bookkeeping system. If they do not match, there might be an error in the entries.
-        </p>
       </div>
     </div>
   )

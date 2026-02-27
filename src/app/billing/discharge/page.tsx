@@ -1,435 +1,487 @@
 'use client'
-import { useState, useMemo } from 'react'
-import { useWardPatients, useDoctors } from '@/hooks/useSupabase'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { ClipboardList, User, Calculator, CreditCard, Receipt, CheckCircle } from 'lucide-react'
-
-interface DischargeCharge {
-  id: string
-  category: string
-  description: string
-  amount: number
-  days?: number
-}
-
-interface PaymentSplit {
-  mode: 'cash' | 'card' | 'upi' | 'insurance' | 'corporate'
-  amount: number
-  reference?: string
-}
+import { calculateTotalBill, getAdvancePayments, type BillBreakdown } from '@/lib/billing-engine'
+import { saveFinalBill, generateReceipt, type FinalBillData, type PaymentMode } from '@/lib/billing-actions'
+import { usePatients } from '@/hooks/useSupabase'
+import ChargesBreakdown from '@/components/billing/ChargesBreakdown'
+import PrintReceipt from '@/components/billing/PrintReceipt'
+import { 
+  Search, 
+  User, 
+  CreditCard, 
+  Receipt,
+  Printer,
+  Save,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+  ArrowLeft,
+  Plus,
+  Trash2,
+  Calculator
+} from 'lucide-react'
+import Link from 'next/link'
+import { useReactToPrint } from 'react-to-print'
 
 export default function DischargeBillPage() {
-  const { data: wardPatients } = useWardPatients()
-  const { data: doctors } = useDoctors()
+  const searchParams = useSearchParams()
+  const { data: patients } = usePatients()
+  const printRef = useRef<HTMLDivElement>(null)
   
+  const [searchTerm, setSearchTerm] = useState('')
   const [selectedPatient, setSelectedPatient] = useState<any>(null)
-  const [charges, setCharges] = useState<DischargeCharge[]>([])
+  const [chargesBreakdown, setChargesBreakdown] = useState<BillBreakdown | null>(null)
   const [advanceAmount, setAdvanceAmount] = useState(0)
-  const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([
-    { mode: 'cash', amount: 0 }
+  const [discount, setDiscount] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [calculatingCharges, setCalculatingCharges] = useState(false)
+  const [lastReceipt, setLastReceipt] = useState<any>(null)
+  const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  const [paymentModes, setPaymentModes] = useState<PaymentMode[]>([
+    { mode: 'Cash', amount: 0 }
   ])
-  const [isGeneratingBill, setIsGeneratingBill] = useState(false)
 
-  // Get patients ready for discharge (have in_date but no out_date)
-  const dischargeReadyPatients = wardPatients.filter(p => p.in_date && !p.out_date)
+  const [remarks, setRemarks] = useState('')
 
-  // Auto-generate comprehensive discharge charges
-  const generateDischargeCharges = () => {
-    if (!selectedPatient) return
-
-    const inDate = new Date(selectedPatient.in_date)
-    const today = new Date()
-    const stayDays = Math.ceil((today.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24))
-    
-    const wardName = selectedPatient.ward_name?.toLowerCase() || 'general'
-    
-    // Bed charges
-    let bedRate = 800 // General ward
-    if (wardName.includes('icu')) bedRate = 3000
-    else if (wardName.includes('private') || wardName.includes('delux')) bedRate = 1500
-
-    // Generate comprehensive charges
-    const newCharges: DischargeCharge[] = [
-      {
-        id: '1',
-        category: 'Accommodation',
-        description: `${selectedPatient.ward_name} Bed Charges`,
-        amount: bedRate * stayDays,
-        days: stayDays
-      },
-      {
-        id: '2',
-        category: 'Nursing',
-        description: 'Nursing Care',
-        amount: (wardName.includes('icu') ? 500 : 300) * stayDays,
-        days: stayDays
-      },
-      {
-        id: '3',
-        category: 'Doctor Fee',
-        description: 'Consultation & Visit Charges',
-        amount: 500 * Math.max(1, Math.floor(stayDays / 2))
-      },
-      {
-        id: '4',
-        category: 'Pharmacy',
-        description: 'Medicines & Consumables',
-        amount: 2500 // Estimated
-      },
-      {
-        id: '5',
-        category: 'Laboratory',
-        description: 'Lab Tests & Investigations',
-        amount: 1800 // Estimated
-      },
-      {
-        id: '6',
-        category: 'Radiology',
-        description: 'X-Ray/USG/CT Scan',
-        amount: 1200 // Estimated
-      },
-      {
-        id: '7',
-        category: 'Misc',
-        description: 'Registration & Other Charges',
-        amount: 500
+  // Pre-select patient from URL params
+  useEffect(() => {
+    const patientId = searchParams.get('patient')
+    if (patientId && patients.length > 0) {
+      const patient = patients.find(p => p.id === parseInt(patientId))
+      if (patient) {
+        setSelectedPatient(patient)
+        handlePatientSelect(patient)
       }
-    ]
-
-    setCharges(newCharges)
-  }
-
-  // Calculate totals
-  const totals = useMemo(() => {
-    const grossTotal = charges.reduce((sum, charge) => sum + charge.amount, 0)
-    const totalPayments = paymentSplits.reduce((sum, split) => sum + split.amount, 0)
-    const netPayable = grossTotal - advanceAmount
-    const balance = netPayable - totalPayments
-    
-    return {
-      grossTotal,
-      advanceAmount,
-      netPayable,
-      totalPayments,
-      balance
     }
-  }, [charges, advanceAmount, paymentSplits])
+  }, [searchParams, patients])
 
-  const addPaymentSplit = () => {
-    setPaymentSplits([...paymentSplits, { mode: 'cash', amount: 0 }])
-  }
+  const filteredPatients = useMemo(() => {
+    if (!searchTerm) return []
+    return patients.filter(patient => {
+      const fullName = `${patient.first_name || ''} ${patient.last_name || ''}`.toLowerCase()
+      const ipd = patient.ipd_number || ''
+      const id = patient.id.toString()
+      return fullName.includes(searchTerm.toLowerCase()) || 
+             ipd.toLowerCase().includes(searchTerm.toLowerCase()) ||
+             id.includes(searchTerm)
+    }).slice(0, 10)
+  }, [patients, searchTerm])
 
-  const updatePaymentSplit = (index: number, field: keyof PaymentSplit, value: any) => {
-    const updated = [...paymentSplits]
-    updated[index] = { ...updated[index], [field]: value }
-    setPaymentSplits(updated)
-  }
+  const totalPayment = useMemo(() => {
+    return paymentModes.reduce((sum, mode) => sum + (mode.amount || 0), 0)
+  }, [paymentModes])
 
-  const removePaymentSplit = (index: number) => {
-    if (paymentSplits.length > 1) {
-      setPaymentSplits(paymentSplits.filter((_, i) => i !== index))
-    }
-  }
+  const netPayable = useMemo(() => {
+    if (!chargesBreakdown) return 0
+    return Math.max(0, chargesBreakdown.totalCharges - advanceAmount - discount)
+  }, [chargesBreakdown, advanceAmount, discount])
 
-  const autoFillPayment = () => {
-    if (paymentSplits.length === 1) {
-      const updated = [...paymentSplits]
-      updated[0].amount = Math.max(0, totals.netPayable)
-      setPaymentSplits(updated)
-    }
-  }
+  const balanceDue = useMemo(() => {
+    return Math.max(0, netPayable - totalPayment)
+  }, [netPayable, totalPayment])
 
-  const generateDischargeBill = async () => {
-    if (!selectedPatient || charges.length === 0) {
-      alert('Please select a patient and generate charges')
-      return
-    }
+  const handlePatientSelect = async (patient: any) => {
+    setSelectedPatient(patient)
+    setSearchTerm(`${patient.first_name} ${patient.last_name}`)
+    setCalculatingCharges(true)
 
-    if (Math.abs(totals.balance) > 1) {
-      alert(`Payment balance is ${formatCurrency(totals.balance)}. Please adjust payments.`)
-      return
-    }
-
-    setIsGeneratingBill(true)
-    
     try {
-      const billData = {
-        patient: selectedPatient,
-        charges,
-        totals,
-        paymentSplits: paymentSplits.filter(p => p.amount > 0),
-        discharge_date: new Date().toISOString(),
-        bill_type: 'discharge'
-      }
-
-      console.log('Generating discharge bill:', billData)
+      // Calculate current charges
+      const breakdown = await calculateTotalBill(patient.id)
+      setChargesBreakdown(breakdown)
       
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      // Get current advance payments
+      const advance = await getAdvancePayments(patient.id)
+      setAdvanceAmount(advance)
       
-      alert(`Discharge bill generated successfully!\nTotal: ${formatCurrency(totals.grossTotal)}\nNet Payable: ${formatCurrency(totals.netPayable)}`)
-      
-      // Reset form
-      setSelectedPatient(null)
-      setCharges([])
-      setAdvanceAmount(0)
-      setPaymentSplits([{ mode: 'cash', amount: 0 }])
-      
+      // Set initial payment amount to net payable
+      const netAmount = Math.max(0, breakdown.totalCharges - advance)
+      setPaymentModes([{ mode: 'Cash', amount: netAmount }])
     } catch (error) {
-      alert('Error generating discharge bill. Please try again.')
+      console.error('Error calculating charges:', error)
+      setAlert({ type: 'error', message: 'Failed to calculate patient charges' })
     } finally {
-      setIsGeneratingBill(false)
+      setCalculatingCharges(false)
     }
   }
+
+  const addPaymentMode = () => {
+    setPaymentModes(prev => [...prev, { mode: 'Cash', amount: 0 }])
+  }
+
+  const removePaymentMode = (index: number) => {
+    if (paymentModes.length > 1) {
+      setPaymentModes(prev => prev.filter((_, i) => i !== index))
+    }
+  }
+
+  const updatePaymentMode = (index: number, field: keyof PaymentMode, value: any) => {
+    setPaymentModes(prev => prev.map((mode, i) => 
+      i === index ? { ...mode, [field]: value } : mode
+    ))
+  }
+
+  const distributePaymentEqually = () => {
+    const amountPerMode = Math.floor(netPayable / paymentModes.length)
+    const remainder = netPayable % paymentModes.length
+    
+    setPaymentModes(prev => prev.map((mode, i) => ({
+      ...mode,
+      amount: amountPerMode + (i < remainder ? 1 : 0)
+    })))
+  }
+
+  const handleDischargeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedPatient || !chargesBreakdown) return
+
+    if (totalPayment !== netPayable) {
+      setAlert({ 
+        type: 'error', 
+        message: `Payment amount (${formatCurrency(totalPayment)}) must equal net payable (${formatCurrency(netPayable)})` 
+      })
+      return
+    }
+
+    setLoading(true)
+    try {
+      const billData: FinalBillData = {
+        patient_id: selectedPatient.id,
+        total_amount: chargesBreakdown.totalCharges,
+        discount,
+        payments: paymentModes.filter(mode => mode.amount > 0),
+        remarks
+      }
+
+      const result = await saveFinalBill(selectedPatient.id, billData)
+      
+      if (result.success && result.billNumber) {
+        // Find the billing record to generate receipt
+        // This is simplified - in real app, you'd get the billing ID from the response
+        setAlert({ type: 'success', message: `Final bill saved successfully! Bill #: ${result.billNumber}` })
+        
+        // Reset form
+        setSelectedPatient(null)
+        setSearchTerm('')
+        setChargesBreakdown(null)
+        setPaymentModes([{ mode: 'Cash', amount: 0 }])
+        setDiscount(0)
+        setRemarks('')
+      } else {
+        setAlert({ type: 'error', message: result.error || 'Failed to save final bill' })
+      }
+    } catch (error) {
+      console.error('Discharge bill error:', error)
+      setAlert({ type: 'error', message: 'An error occurred while saving the bill' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handlePrint = useReactToPrint({
+    contentRef: printRef,
+    documentTitle: `Discharge Bill - ${selectedPatient?.first_name} ${selectedPatient?.last_name}`
+  })
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <ClipboardList className="w-6 h-6 text-indigo-600" />
-        <h2 className="text-xl font-bold text-gray-900">Discharge Bill</h2>
-        <span className="text-sm text-gray-500">Final bill generation with multiple payment modes</span>
+      <div className="flex items-center gap-4">
+        <Link href="/billing" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+          <ArrowLeft className="w-5 h-5" />
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Discharge Bill</h1>
+          <p className="text-gray-600">Generate final bill for patient discharge</p>
+        </div>
       </div>
 
-      {!selectedPatient ? (
-        /* Patient Selection */
+      {/* Alert */}
+      {alert && (
+        <div className={`p-4 rounded-lg flex items-center gap-3 ${
+          alert.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+        }`}>
+          {alert.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+          <span>{alert.message}</span>
+          <button 
+            onClick={() => setAlert(null)}
+            className="ml-auto text-lg font-semibold"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+        {/* Patient Search & Selection */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-6">Select Patient for Discharge</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Search className="w-5 h-5" />
+            Select Patient
+          </h3>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {dischargeReadyPatients.map((patient) => {
-              const inDate = new Date(patient.in_date)
-              const today = new Date()
-              const stayDays = Math.ceil((today.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24))
-              
-              return (
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input
+              type="text"
+              placeholder="Search patient..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+
+          {searchTerm && !selectedPatient && filteredPatients.length > 0 && (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {filteredPatients.map(patient => (
                 <button
                   key={patient.id}
-                  onClick={() => setSelectedPatient(patient)}
-                  className="text-left p-4 border-2 border-gray-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                  onClick={() => handlePatientSelect(patient)}
+                  className="w-full p-3 text-left border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
                 >
-                  <div className="font-semibold text-gray-900">
+                  <div className="font-medium text-gray-900">
                     {patient.first_name} {patient.last_name}
                   </div>
-                  <div className="text-sm text-gray-600 mt-1">
-                    ID: {patient.patient_id} • {patient.ward_name}
-                  </div>
-                  <div className="text-sm text-gray-600">
-                    Admitted: {formatDate(patient.in_date)}
-                  </div>
-                  <div className="text-sm font-medium text-indigo-600 mt-2">
-                    Stay: {stayDays} days
+                  <div className="text-sm text-gray-500">
+                    IPD: {patient.ipd_number || 'N/A'} | ID: {patient.id}
                   </div>
                 </button>
-              )
-            })}
-          </div>
-          
-          {dischargeReadyPatients.length === 0 && (
-            <div className="text-center text-gray-500 py-8">
-              <ClipboardList className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-              <p>No patients ready for discharge</p>
+              ))}
             </div>
           )}
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {/* Patient Info */}
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">
-                  {selectedPatient.first_name} {selectedPatient.last_name}
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-2 text-sm text-gray-600">
-                  <div>ID: {selectedPatient.patient_id}</div>
-                  <div>Mobile: {selectedPatient.mobile}</div>
-                  <div>Ward: {selectedPatient.ward_name}</div>
-                  <div>Admitted: {formatDate(selectedPatient.in_date)}</div>
+
+          {selectedPatient && (
+            <div className="border border-gray-200 rounded-lg p-4 bg-blue-50">
+              <div className="flex items-center gap-3 mb-3">
+                <User className="w-5 h-5 text-blue-600" />
+                <div>
+                  <h4 className="font-semibold text-gray-900">
+                    {selectedPatient.first_name} {selectedPatient.last_name}
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    IPD: {selectedPatient.ipd_number || 'N/A'}
+                  </p>
                 </div>
               </div>
+              
               <button
-                onClick={() => setSelectedPatient(null)}
-                className="text-red-600 hover:text-red-800"
+                onClick={() => {
+                  setSelectedPatient(null)
+                  setSearchTerm('')
+                  setChargesBreakdown(null)
+                }}
+                className="text-sm text-blue-600 hover:text-blue-700"
               >
                 Change Patient
               </button>
             </div>
-            
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <button
-                onClick={generateDischargeCharges}
-                className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center gap-2"
-              >
-                <Calculator className="w-4 h-4" />
-                Generate Discharge Charges
-              </button>
-            </div>
+          )}
+        </div>
+
+        {/* Payment Modes */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <CreditCard className="w-5 h-5" />
+              Payment Modes
+            </h3>
+            <button
+              type="button"
+              onClick={addPaymentMode}
+              disabled={!selectedPatient}
+              className="p-1 text-blue-600 hover:text-blue-700 disabled:text-gray-400"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
           </div>
 
-          {charges.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Charges Breakdown */}
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Charges Breakdown</h3>
-                
-                <div className="space-y-3">
-                  {charges.map((charge) => (
-                    <div key={charge.id} className="flex justify-between items-start p-3 border border-gray-200 rounded-lg">
-                      <div>
-                        <div className="font-medium text-gray-900">{charge.description}</div>
-                        <div className="text-sm text-gray-600">{charge.category}</div>
-                        {charge.days && (
-                          <div className="text-xs text-gray-500">{charge.days} days</div>
-                        )}
-                      </div>
-                      <div className="font-semibold text-right">
-                        {formatCurrency(charge.amount)}
-                      </div>
-                    </div>
-                  ))}
+          <div className="space-y-4">
+            {paymentModes.map((payment, index) => (
+              <div key={index} className="border border-gray-200 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm font-medium text-gray-700">Payment {index + 1}</span>
+                  {paymentModes.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removePaymentMode(index)}
+                      className="p-1 text-red-600 hover:text-red-700"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
-
-                {/* Advance Payment */}
-                <div className="mt-6 pt-4 border-t border-gray-200">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Advance Payment Received
-                  </label>
+                
+                <div className="space-y-2">
+                  <select
+                    value={payment.mode}
+                    onChange={(e) => updatePaymentMode(index, 'mode', e.target.value)}
+                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                    disabled={!selectedPatient}
+                  >
+                    <option value="Cash">Cash</option>
+                    <option value="Cheque">Cheque</option>
+                    <option value="NEFT">NEFT</option>
+                    <option value="Card">Card</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Bank Deposit">Bank Deposit</option>
+                  </select>
+                  
                   <input
                     type="number"
-                    placeholder="Enter advance amount"
-                    value={advanceAmount || ''}
-                    onChange={(e) => setAdvanceAmount(parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    step="0.01"
+                    min="0"
+                    value={payment.amount || ''}
+                    onChange={(e) => updatePaymentMode(index, 'amount', parseFloat(e.target.value) || 0)}
+                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                    placeholder="Amount"
+                    disabled={!selectedPatient}
                   />
-                </div>
 
-                {/* Bill Summary */}
-                <div className="mt-6 pt-4 border-t border-gray-200 space-y-2">
-                  <div className="flex justify-between">
-                    <span>Gross Total:</span>
-                    <span className="font-semibold">{formatCurrency(totals.grossTotal)}</span>
-                  </div>
-                  <div className="flex justify-between text-green-600">
-                    <span>Less: Advance:</span>
-                    <span>-{formatCurrency(totals.advanceAmount)}</span>
-                  </div>
-                  <div className="flex justify-between text-lg font-bold border-t pt-2">
-                    <span>Net Payable:</span>
-                    <span className="text-indigo-600">{formatCurrency(totals.netPayable)}</span>
-                  </div>
+                  {['Cheque', 'NEFT', 'Bank Deposit'].includes(payment.mode) && (
+                    <input
+                      type="text"
+                      value={payment.bank_name || ''}
+                      onChange={(e) => updatePaymentMode(index, 'bank_name', e.target.value)}
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                      placeholder="Bank name"
+                    />
+                  )}
+
+                  {payment.mode === 'Cheque' && (
+                    <input
+                      type="text"
+                      value={payment.cheque_number || ''}
+                      onChange={(e) => updatePaymentMode(index, 'cheque_number', e.target.value)}
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                      placeholder="Cheque number"
+                    />
+                  )}
+
+                  {['NEFT', 'Card', 'UPI'].includes(payment.mode) && (
+                    <input
+                      type="text"
+                      value={payment.transaction_id || ''}
+                      onChange={(e) => updatePaymentMode(index, 'transaction_id', e.target.value)}
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                      placeholder="Transaction ID"
+                    />
+                  )}
                 </div>
               </div>
+            ))}
+            
+            {paymentModes.length > 1 && selectedPatient && (
+              <button
+                type="button"
+                onClick={distributePaymentEqually}
+                className="w-full p-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2"
+              >
+                <Calculator className="w-4 h-4" />
+                Distribute Equally
+              </button>
+            )}
+          </div>
 
-              {/* Payment Collection */}
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Payment Collection</h3>
-                  <button
-                    onClick={autoFillPayment}
-                    className="text-indigo-600 hover:text-indigo-800 text-sm"
-                  >
-                    Auto-fill
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {paymentSplits.map((split, index) => (
-                    <div key={index} className="border border-gray-200 rounded-lg p-4">
-                      <div className="grid grid-cols-2 gap-3 mb-3">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Payment Mode
-                          </label>
-                          <select
-                            value={split.mode}
-                            onChange={(e) => updatePaymentSplit(index, 'mode', e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          >
-                            <option value="cash">Cash</option>
-                            <option value="card">Card</option>
-                            <option value="upi">UPI</option>
-                            <option value="insurance">Insurance</option>
-                            <option value="corporate">Corporate</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Amount
-                          </label>
-                          <input
-                            type="number"
-                            value={split.amount || ''}
-                            onChange={(e) => updatePaymentSplit(index, 'amount', parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                        </div>
-                      </div>
-                      
-                      {(split.mode === 'card' || split.mode === 'upi') && (
-                        <input
-                          type="text"
-                          placeholder="Transaction reference"
-                          value={split.reference || ''}
-                          onChange={(e) => updatePaymentSplit(index, 'reference', e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        />
-                      )}
-                      
-                      {paymentSplits.length > 1 && (
-                        <button
-                          onClick={() => removePaymentSplit(index)}
-                          className="text-red-600 hover:text-red-800 text-sm mt-2"
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <button
-                  onClick={addPaymentSplit}
-                  className="w-full mt-4 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200"
-                >
-                  + Add Payment Mode
-                </button>
-
-                {/* Payment Summary */}
-                <div className="mt-6 pt-4 border-t border-gray-200 space-y-2">
-                  <div className="flex justify-between">
-                    <span>Total Payments:</span>
-                    <span className="font-semibold">{formatCurrency(totals.totalPayments)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Balance:</span>
-                    <span className={`font-semibold ${totals.balance > 1 ? 'text-red-600' : totals.balance < -1 ? 'text-green-600' : 'text-gray-900'}`}>
-                      {formatCurrency(totals.balance)}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Generate Bill Button */}
-                <button
-                  onClick={generateDischargeBill}
-                  disabled={isGeneratingBill || Math.abs(totals.balance) > 1}
-                  className="w-full mt-6 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {isGeneratingBill ? (
-                    <>
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                      Generating Discharge Bill...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="w-5 h-5" />
-                      Generate Discharge Bill & Receipt
-                    </>
-                  )}
-                </button>
+          {/* Payment Summary */}
+          {selectedPatient && chargesBreakdown && (
+            <div className="mt-4 pt-4 border-t border-gray-200 text-sm space-y-2">
+              <div className="flex justify-between">
+                <span>Total Bill:</span>
+                <span className="font-medium">{formatCurrency(chargesBreakdown.totalCharges)}</span>
+              </div>
+              <div className="flex justify-between text-green-700">
+                <span>Advance Paid:</span>
+                <span className="font-medium">- {formatCurrency(advanceAmount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Discount:</span>
+                <span className="font-medium">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max={chargesBreakdown.totalCharges}
+                    value={discount || ''}
+                    onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                    className="w-20 px-1 py-0.5 text-right border border-gray-300 rounded text-xs"
+                  />
+                </span>
+              </div>
+              <div className="flex justify-between font-semibold border-t pt-2">
+                <span>Net Payable:</span>
+                <span>{formatCurrency(netPayable)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Payment Total:</span>
+                <span className="font-medium">{formatCurrency(totalPayment)}</span>
+              </div>
+              <div className={`flex justify-between font-semibold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                <span>Balance Due:</span>
+                <span>{formatCurrency(balanceDue)}</span>
               </div>
             </div>
           )}
+        </div>
+
+        {/* Actions & Remarks */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Actions</h3>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Remarks
+              </label>
+              <textarea
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                rows={3}
+                placeholder="Optional remarks..."
+                disabled={!selectedPatient}
+              />
+            </div>
+
+            <button
+              onClick={handleDischargeSubmit}
+              disabled={!selectedPatient || !chargesBreakdown || balanceDue !== 0 || loading}
+              className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {loading ? 'Saving...' : 'Generate Final Bill'}
+            </button>
+
+            {lastReceipt && (
+              <button
+                onClick={handlePrint}
+                className="w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2 font-medium"
+              >
+                <Printer className="w-4 h-4" />
+                Print Bill
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Charges Breakdown */}
+        <div>
+          <ChargesBreakdown
+            breakdown={chargesBreakdown}
+            loading={calculatingCharges}
+            showAdvance={true}
+            advanceAmount={advanceAmount}
+            discount={discount}
+          />
+        </div>
+      </div>
+
+      {/* Hidden Print Component */}
+      {lastReceipt && (
+        <div style={{ display: 'none' }}>
+          <PrintReceipt ref={printRef} receipt={lastReceipt} type="final" />
         </div>
       )}
     </div>
