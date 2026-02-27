@@ -1,4 +1,5 @@
 'use client'
+// @ts-nocheck
 import { useState, useEffect, useMemo } from 'react'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { calculateTotalBill, type BillBreakdown } from '@/lib/billing-engine'

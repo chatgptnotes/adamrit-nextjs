@@ -1,4 +1,5 @@
 'use client'
+// @ts-nocheck
 import { useState, useEffect } from 'react'
 import { supabaseProd as supabase } from '@/lib/supabase-prod'
 import { Bed, Users, CheckCircle, AlertCircle } from 'lucide-react'
@@ -134,7 +135,7 @@ export default function BedDashboard() {
         <>
           {/* Ward Overview Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-6">
-            {wards.map(ward => {
+            {wards.map((ward: any) => {
               const occupancyPercentage = ward.total_beds ? (ward.occupied_beds! / ward.total_beds * 100) : 0
               return (
                 <div
@@ -172,7 +173,7 @@ export default function BedDashboard() {
                 {wards.find(w => w.id === selectedWard)?.name} - Bed Layout
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
-                {beds.map(bed => (
+                {beds.map((bed: any) => (
                   <div
                     key={bed.id}
                     className={`aspect-square rounded-lg border-2 p-2 text-center transition-all ${

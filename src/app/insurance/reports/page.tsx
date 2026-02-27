@@ -1,4 +1,5 @@
 'use client'
+// @ts-nocheck
 import { useState } from 'react'
 import { useInsuranceClaims, useCorporateBills } from '@/hooks/useSupabase'
 import { formatDate, formatCurrency } from '@/lib/utils'

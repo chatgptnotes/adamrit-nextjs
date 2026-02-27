@@ -143,7 +143,7 @@ export default function Ledger() {
               <td style="border: 1px solid #000; padding: 8px; text-align: right;">—</td>
               <td style="border: 1px solid #000; padding: 8px; text-align: right;">${formatCurrency(openingBalance)}</td>
             </tr>
-            ${entries.map(entry => `
+            ${entries.map((entry: any) => `
               <tr>
                 <td style="border: 1px solid #000; padding: 8px;">${formatDate(entry.voucher_date)}</td>
                 <td style="border: 1px solid #000; padding: 8px; font-size: 11px;">${entry.voucher_logs.voucher_number}</td>

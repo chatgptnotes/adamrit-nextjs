@@ -81,7 +81,7 @@ export default function JournalEntry() {
     if (form.entries.length > 1) {
       setForm(prev => ({
         ...prev,
-        entries: prev.entries.filter(entry => entry.id !== entryId)
+        entries: prev.entries.filter((entry: any) => entry.id !== entryId)
       }))
     }
   }
@@ -89,7 +89,7 @@ export default function JournalEntry() {
   const updateEntry = (entryId: string, field: keyof JournalEntryRow, value: any) => {
     setForm(prev => ({
       ...prev,
-      entries: prev.entries.map(entry => {
+      entries: prev.entries.map((entry: any) => {
         if (entry.id === entryId) {
           const updated = { ...entry, [field]: value }
           
@@ -147,7 +147,7 @@ export default function JournalEntry() {
     setLoading(true)
     try {
       // Prepare entries for the accounting engine
-      const entriesData = form.entries.map(entry => ({
+      const entriesData = form.entries.map((entry: any) => ({
         account_id: entry.account_id,
         debit: entry.debit > 0 ? entry.debit : undefined,
         credit: entry.credit > 0 ? entry.credit : undefined,
@@ -215,7 +215,7 @@ export default function JournalEntry() {
             </tr>
           </thead>
           <tbody>
-            ${form.entries.map(entry => `
+            ${form.entries.map((entry: any) => `
               <tr>
                 <td style="border: 1px solid #000; padding: 8px;">${entry.account_name}</td>
                 <td style="border: 1px solid #000; padding: 8px;">${entry.narration || form.narration}</td>

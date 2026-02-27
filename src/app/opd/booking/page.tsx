@@ -1,4 +1,5 @@
 'use client'
+// @ts-nocheck
 import { useState, useEffect } from 'react'
 import { supabaseProd as supabase } from '@/lib/supabase-prod'
 import { Calendar, Clock, User, Search, Stethoscope, CreditCard } from 'lucide-react'

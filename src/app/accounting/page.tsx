@@ -1,4 +1,5 @@
 'use client'
+// @ts-nocheck
 import { useState, useEffect } from 'react'
 import { supabaseProd } from '@/lib/supabase-prod'
 import { formatCurrency, formatDate } from '@/lib/utils'

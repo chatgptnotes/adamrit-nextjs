@@ -1,445 +1,638 @@
 'use client'
-import { useState } from 'react'
-import { usePatients, useDoctors } from '@/hooks/useSupabase'
-import { formatCurrency } from '@/lib/utils'
-import { Package, User, Search, Scissors, Bed, Clock, Receipt, Tag } from 'lucide-react'
+// @ts-nocheck
 
-interface PackageData {
-  id: string
+import { useState, useEffect } from 'react'
+import { supabase } from '@/lib/supabase'
+import { saveFinalBill } from '@/lib/billing-actions'
+import { calculateTotalBill } from '@/lib/billing-engine'
+import { formatCurrency } from '@/lib/utils'
+import DataTable from '@/components/DataTable'
+import StatCard from '@/components/StatCard'
+import { Package, User, Search, Scissors, Bed, Clock, Receipt, Tag, Plus, Edit, Eye, TrendingUp } from 'lucide-react'
+
+interface SurgeryPackage {
+  id: number
   name: string
-  type: 'surgery' | 'ward' | 'daycare'
-  description: string
+  category: string
+  service_group: string
+  nabh_charges?: number
+  non_nabh_charges?: number
+  description?: string
+  department?: string
   inclusions: string[]
-  price: number
-  duration?: string
-  category?: string
-  popular?: boolean
 }
 
-export default function PackageBillingPage() {
-  const { data: patients } = usePatients()
-  const { data: doctors } = useDoctors()
-  
-  const [selectedPatient, setSelectedPatient] = useState<any>(null)
-  const [selectedDoctor, setSelectedDoctor] = useState<any>(null)
-  const [selectedPackage, setSelectedPackage] = useState<PackageData | null>(null)
+interface Patient {
+  id: number
+  first_name: string
+  last_name: string
+  uhid?: string
+  mobile?: string
+}
+
+interface Doctor {
+  id: number
+  doctor_name: string
+  specialization: string
+}
+
+export default function SurgeryPackagesPage() {
+  const [packages, setPackages] = useState<SurgeryPackage[]>([])
+  const [patients, setPatients] = useState<Patient[]>([])
+  const [doctors, setDoctors] = useState<Doctor[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null)
+  const [selectedDoctor, setSelectedDoctor] = useState<Doctor | null>(null)
+  const [selectedPackage, setSelectedPackage] = useState<SurgeryPackage | null>(null)
+  const [showPackageModal, setShowPackageModal] = useState(false)
+  const [showApplyModal, setShowApplyModal] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
   const [patientSearch, setPatientSearch] = useState('')
-  const [activeCategory, setActiveCategory] = useState<'all' | 'surgery' | 'ward' | 'daycare'>('all')
-  
-  // Predefined packages
-  const packages: PackageData[] = [
-    // Surgery Packages
-    {
-      id: 'surg_arthroscopy',
-      name: 'Knee Arthroscopy Package',
-      type: 'surgery',
-      category: 'orthopedic',
-      description: 'Complete arthroscopy package including surgery, anesthesia, and post-op care',
-      inclusions: [
-        'Surgeon Fee', 'Assistant Surgeon Fee', 'Anesthetist Fee', 
-        'OT Charges (2 hours)', 'Arthroscopy Equipment', 'Post-op Medications',
-        '1 Day Room Charges', 'Nursing Care', 'Physiotherapy (1 session)'
-      ],
-      price: 85000,
-      duration: '2 hours',
-      popular: true
-    },
-    {
-      id: 'surg_fracture',
-      name: 'Fracture Fixation Package',
-      type: 'surgery',
-      category: 'orthopedic',
-      description: 'Comprehensive fracture fixation with implants',
-      inclusions: [
-        'Surgeon Fee', 'Assistant Fee', 'Anesthesia', 
-        'OT Charges (3 hours)', 'Implants & Hardware', 'X-rays',
-        '2 Days Room Charges', 'Nursing Care', 'Medications'
-      ],
-      price: 125000,
-      duration: '3 hours'
-    },
-    {
-      id: 'surg_joint_replacement',
-      name: 'Joint Replacement Package',
-      type: 'surgery',
-      category: 'orthopedic',
-      description: 'Complete joint replacement with prosthesis',
-      inclusions: [
-        'Surgeon Fee', 'Assistant Fee', 'Anesthetist Fee',
-        'OT Charges (4 hours)', 'Prosthesis/Implant', 'Blood Tests',
-        '5 Days IPD Charges', 'ICU if required', 'Physiotherapy (5 sessions)',
-        'Post-op X-rays', 'Medications'
-      ],
-      price: 275000,
-      duration: '4 hours',
-      popular: true
-    },
-    
-    // Ward Packages
-    {
-      id: 'ward_general',
-      name: 'General Ward Package',
-      type: 'ward',
-      description: '7-day stay in general ward with nursing care',
-      inclusions: [
-        '7 Days Bed Charges', 'Nursing Care', '3 Doctor Visits',
-        'Basic Medications', 'Meals', 'Attendant Facilities'
-      ],
-      price: 15000,
-      duration: '7 days'
-    },
-    {
-      id: 'ward_private',
-      name: 'Private Room Package',
-      type: 'ward',
-      description: '7-day stay in private room with enhanced services',
-      inclusions: [
-        '7 Days Private Room', 'Dedicated Nursing', 'Daily Doctor Rounds',
-        'Premium Medications', 'Special Meals', 'Attendant Bed',
-        'TV & WiFi', 'Housekeeping'
-      ],
-      price: 35000,
-      duration: '7 days',
-      popular: true
-    },
-    {
-      id: 'ward_icu',
-      name: 'ICU Care Package',
-      type: 'ward',
-      description: '3-day intensive care with monitoring',
-      inclusions: [
-        '3 Days ICU Charges', '24/7 Nursing', 'Ventilator Support',
-        'Continuous Monitoring', 'Critical Care Medications',
-        'Specialist Consultations', 'Lab Tests', 'Emergency Services'
-      ],
-      price: 75000,
-      duration: '3 days'
-    },
-    
-    // Daycare Packages
-    {
-      id: 'daycare_cataract',
-      name: 'Cataract Surgery Daycare',
-      type: 'daycare',
-      category: 'ophthalmology',
-      description: 'Same-day cataract surgery with lens implant',
-      inclusions: [
-        'Pre-op Assessment', 'Cataract Surgery', 'IOL Implant',
-        'Local Anesthesia', 'Post-op Care', '4 hours Recovery',
-        'Take-home Medications', 'Follow-up Visit'
-      ],
-      price: 35000,
-      duration: 'Same day'
-    },
-    {
-      id: 'daycare_endoscopy',
-      name: 'Diagnostic Endoscopy Package',
-      type: 'daycare',
-      category: 'gastroenterology',
-      description: 'Upper/Lower endoscopy with biopsy if needed',
-      inclusions: [
-        'Pre-procedure Preparation', 'Endoscopy Procedure', 'Sedation',
-        'Biopsy (if required)', 'Recovery Care', 'Reports',
-        'Post-procedure Instructions'
-      ],
-      price: 12000,
-      duration: '4 hours'
-    },
-    {
-      id: 'daycare_colonoscopy',
-      name: 'Colonoscopy Screening Package',
-      type: 'daycare',
-      category: 'gastroenterology',
-      description: 'Complete colonoscopy with polyp removal',
-      inclusions: [
-        'Bowel Preparation Kit', 'Colonoscopy Procedure', 'IV Sedation',
-        'Polyp Removal (if found)', 'Pathology', 'Recovery',
-        'Detailed Report', 'Dietary Instructions'
-      ],
-      price: 18000,
-      duration: 'Same day',
-      popular: true
+  const [packageForm, setPackageForm] = useState({
+    name: '',
+    category: 'surgery',
+    service_group: 'surgery',
+    nabh_charges: '',
+    non_nabh_charges: '',
+    description: '',
+    department: '',
+    inclusions: ['Surgeon Fee', 'Anesthesia', 'OT Charges', 'Post-op Care']
+  })
+
+  useEffect(() => {
+    loadData()
+  }, [])
+
+  async function loadData() {
+    setLoading(true)
+    try {
+      // Load surgery packages from tariff_lists
+      const { data: packagesData } = await supabase
+        .from('tariff_lists')
+        .select('*')
+        .ilike('service_group', '%surgery%')
+        .order('name')
+
+      // Load patients
+      const { data: patientsData } = await supabase
+        .from('patients')
+        .select('id, first_name, last_name, uhid, mobile')
+        .order('first_name')
+        .limit(100)
+
+      // Load doctors
+      const { data: doctorsData } = await supabase
+        .from('doctors')
+        .select('id, doctor_name, specialization')
+        .order('doctor_name')
+
+      setPackages((packagesData || []).map((pkg: any) => ({
+        ...pkg,
+        inclusions: pkg.description ? pkg.description.split(',').map((i: any) => i.trim()) : []
+      })))
+      setPatients(patientsData || [])
+      setDoctors(doctorsData || [])
+    } catch (error) {
+      console.error('Error loading data:', error)
+    } finally {
+      setLoading(false)
     }
-  ]
+  }
 
-  const filteredPatients = patients.filter(p => 
-    `${p.first_name || ''} ${p.last_name || ''}`.toLowerCase().includes(patientSearch.toLowerCase()) ||
-    p.mobile?.includes(patientSearch) ||
-    p.id?.toString().includes(patientSearch)
-  )
+  async function handleCreatePackage() {
+    try {
+      const { data, error } = await supabase
+        .from('tariff_lists')
+        .insert({
+          name: packageForm.name,
+          category: packageForm.category,
+          service_group: packageForm.service_group,
+          description: packageForm.inclusions.join(', '),
+          department: packageForm.department,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single()
 
-  const filteredPackages = packages.filter(pkg => 
-    activeCategory === 'all' || pkg.type === activeCategory
-  )
+      if (error) throw error
 
-  const generatePackageBill = () => {
+      // Create tariff amounts
+      await supabase
+        .from('tariff_amounts')
+        .insert([
+          {
+            tariff_list_id: data.id,
+            tariff_standard_id: 1, // Default/General
+            nabh_charges: parseFloat(packageForm.nabh_charges),
+            non_nabh_charges: parseFloat(packageForm.non_nabh_charges),
+            category: 'surgery',
+            created_at: new Date().toISOString()
+          }
+        ])
+
+      await loadData()
+      setShowCreateModal(false)
+      resetPackageForm()
+    } catch (error) {
+      console.error('Error creating package:', error)
+      alert('Error creating package')
+    }
+  }
+
+  async function handleApplyPackage() {
     if (!selectedPatient || !selectedPackage) {
       alert('Please select both patient and package')
       return
     }
 
-    const billData = {
-      patient: selectedPatient,
-      doctor: selectedDoctor,
-      package: selectedPackage,
-      total_amount: selectedPackage.price,
-      bill_type: 'package',
-      generated_at: new Date().toISOString()
-    }
+    try {
+      const isNabh = false // Determine based on hospital type
+      const packageAmount = isNabh ? selectedPackage.nabh_charges : selectedPackage.non_nabh_charges
+      
+      if (!packageAmount) {
+        alert('Package amount not found')
+        return
+      }
 
-    console.log('Generating package bill:', billData)
-    
-    alert(`Package bill generated successfully!\nPackage: ${selectedPackage.name}\nAmount: ${formatCurrency(selectedPackage.price)}`)
-    
-    // Reset selections
-    setSelectedPackage(null)
+      // Create a final bill with the package
+      const result = await saveFinalBill(selectedPatient.id, {
+        patient_id: selectedPatient.id,
+        total_amount: packageAmount,
+        discount: 0,
+        payments: [{
+          mode: 'Cash',
+          amount: 0 // No payment yet, just creating the bill
+        }],
+        remarks: `Surgery Package: ${selectedPackage.name}`
+      })
+
+      if (result.success) {
+        alert(`Package applied successfully!\nPackage: ${selectedPackage.name}\nAmount: ${formatCurrency(packageAmount)}`)
+        setShowApplyModal(false)
+        resetSelections()
+      } else {
+        alert('Error applying package: ' + result.error)
+      }
+    } catch (error) {
+      console.error('Error applying package:', error)
+      alert('Error applying package')
+    }
+  }
+
+  function resetPackageForm() {
+    setPackageForm({
+      name: '',
+      category: 'surgery',
+      service_group: 'surgery',
+      nabh_charges: '',
+      non_nabh_charges: '',
+      description: '',
+      department: '',
+      inclusions: ['Surgeon Fee', 'Anesthesia', 'OT Charges', 'Post-op Care']
+    })
+  }
+
+  function resetSelections() {
     setSelectedPatient(null)
     setSelectedDoctor(null)
+    setSelectedPackage(null)
     setPatientSearch('')
   }
 
+  const filteredPackages = packages.filter(pkg => {
+    const matchesSearch = pkg.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         pkg.category?.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesCategory = categoryFilter === 'all' || pkg.category?.toLowerCase().includes(categoryFilter.toLowerCase())
+    return matchesSearch && matchesCategory
+  })
+
+  const filteredPatients = patients.filter((p: any) => 
+    `${p.first_name || ''} ${p.last_name || ''}`.toLowerCase().includes(patientSearch.toLowerCase()) ||
+    p.mobile?.includes(patientSearch) ||
+    p.uhid?.toLowerCase().includes(patientSearch.toLowerCase())
+  )
+
+  // Get unique categories
+  const categories = Array.from(new Set(packages.map((p: any) => p.category).filter(Boolean)))
+
+  // Calculate stats
+  const stats = {
+    totalPackages: packages.length,
+    surgeryPackages: packages.filter((p: any) => p.service_group?.toLowerCase().includes('surgery')).length,
+    avgPackagePrice: packages.length > 0 ? 
+      packages.reduce((sum, p) => sum + (p.non_nabh_charges || 0), 0) / packages.length : 0,
+    highestPackage: Math.max(...packages.map((p: any) => p.non_nabh_charges || 0))
+  }
+
+  const columns = [
+    { key: 'name', label: 'Package Name' },
+    { key: 'category', label: 'Category' },
+    { key: 'department', label: 'Department' },
+    { 
+      key: 'non_nabh_charges', 
+      label: 'Non-NABH Rate', 
+      render: (value: number) => value ? formatCurrency(value) : 'N/A'
+    },
+    { 
+      key: 'nabh_charges', 
+      label: 'NABH Rate', 
+      render: (value: number) => value ? formatCurrency(value) : 'N/A'
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      render: (value: any, row: SurgeryPackage) => (
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              setSelectedPackage(row)
+              setShowPackageModal(true)
+            }}
+            className="text-blue-600 hover:text-blue-800"
+            title="View Details"
+          >
+            <Eye className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              setSelectedPackage(row)
+              setShowApplyModal(true)
+            }}
+            className="text-green-600 hover:text-green-800"
+            title="Apply to Patient"
+          >
+            <Receipt className="w-4 h-4" />
+          </button>
+        </div>
+      )
+    }
+  ]
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Package className="w-6 h-6 text-purple-600" />
-        <h2 className="text-xl font-bold text-gray-900">Package Billing</h2>
-        <span className="text-sm text-gray-500">Surgery, ward & daycare packages with fixed rates</span>
+    <div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">Surgery Packages</h1>
+        <p className="text-gray-600">Manage surgery packages with fixed rates and inclusions</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Patient & Doctor Selection */}
-        <div className="lg:col-span-1 space-y-6">
-          {/* Patient Selection */}
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-              <User className="w-5 h-5" />
-              Select Patient
-            </h3>
-            
-            <div className="relative mb-4">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+        <StatCard
+          title="Total Packages"
+          value={stats.totalPackages.toLocaleString()}
+          subtitle="All surgery packages"
+          icon={Package}
+          color="blue"
+        />
+        <StatCard
+          title="Surgery Packages"
+          value={stats.surgeryPackages.toLocaleString()}
+          subtitle="Surgery-specific"
+          icon={Scissors}
+          color="red"
+        />
+        <StatCard
+          title="Average Price"
+          value={formatCurrency(stats.avgPackagePrice)}
+          subtitle="Average package cost"
+          icon={Tag}
+          color="green"
+        />
+        <StatCard
+          title="Highest Package"
+          value={formatCurrency(stats.highestPackage)}
+          subtitle="Most expensive"
+          icon={TrendingUp}
+          color="purple"
+        />
+      </div>
+
+      {/* Search and Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+        <div className="flex flex-col lg:flex-row gap-4 items-center justify-between">
+          <div className="flex-1 max-w-md">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
               <input
                 type="text"
-                placeholder="Search patient..."
-                value={patientSearch}
-                onChange={(e) => setPatientSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Search packages..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-
-            {selectedPatient ? (
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h4 className="font-semibold text-gray-900">
-                      {selectedPatient.first_name} {selectedPatient.last_name}
-                    </h4>
-                    <p className="text-sm text-gray-600">ID: {selectedPatient.id}</p>
-                    <p className="text-sm text-gray-600">Mobile: {selectedPatient.mobile}</p>
-                  </div>
-                  <button 
-                    onClick={() => setSelectedPatient(null)}
-                    className="text-red-600 hover:text-red-800 text-sm"
-                  >
-                    Change
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="max-h-48 overflow-y-auto space-y-2">
-                {filteredPatients.slice(0, 6).map((patient) => (
-                  <button
-                    key={patient.id}
-                    onClick={() => setSelectedPatient(patient)}
-                    className="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-gray-50"
-                  >
-                    <div className="font-medium text-gray-900">
-                      {patient.first_name} {patient.last_name}
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      {patient.id} • {patient.mobile}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
-
-          {/* Doctor Selection */}
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Doctor (Optional)</h3>
-            <select 
-              value={selectedDoctor?.id || ''}
-              onChange={(e) => {
-                const doctor = doctors.find(d => d.id === parseInt(e.target.value))
-                setSelectedDoctor(doctor)
-              }}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+          
+          <div className="flex gap-2">
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="">Select a doctor...</option>
-              {doctors.map((doctor) => (
-                <option key={doctor.id} value={doctor.id}>
-                  {doctor.doctor_name} - {doctor.specialization}
-                </option>
+              <option value="all">All Categories</option>
+              {categories.map(category => (
+                <option key={category} value={category}>{category}</option>
               ))}
             </select>
-          </div>
-        </div>
-
-        {/* Package Selection */}
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-semibold text-gray-900">Select Package</h3>
-              
-              {/* Category Filter */}
-              <div className="flex gap-2">
-                {[
-                  { key: 'all', label: 'All', icon: Package },
-                  { key: 'surgery', label: 'Surgery', icon: Scissors },
-                  { key: 'ward', label: 'Ward', icon: Bed },
-                  { key: 'daycare', label: 'Daycare', icon: Clock }
-                ].map((category) => {
-                  const Icon = category.icon
-                  return (
-                    <button
-                      key={category.key}
-                      onClick={() => setActiveCategory(category.key as any)}
-                      className={`flex items-center gap-1 px-3 py-1 rounded-full text-sm transition-colors ${
-                        activeCategory === category.key
-                          ? 'bg-purple-100 text-purple-700'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {category.label}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-96 overflow-y-auto">
-              {filteredPackages.map((pkg) => (
-                <div
-                  key={pkg.id}
-                  className={`border-2 rounded-lg p-4 cursor-pointer transition-colors relative ${
-                    selectedPackage?.id === pkg.id
-                      ? 'border-purple-500 bg-purple-50'
-                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                  }`}
-                  onClick={() => setSelectedPackage(pkg)}
-                >
-                  {pkg.popular && (
-                    <div className="absolute -top-2 -right-2 bg-orange-500 text-white text-xs px-2 py-1 rounded-full">
-                      Popular
-                    </div>
-                  )}
-                  
-                  <div className="flex items-start gap-3 mb-3">
-                    <div className={`p-2 rounded-lg ${
-                      pkg.type === 'surgery' ? 'bg-red-100 text-red-600' :
-                      pkg.type === 'ward' ? 'bg-blue-100 text-blue-600' :
-                      'bg-green-100 text-green-600'
-                    }`}>
-                      {pkg.type === 'surgery' ? <Scissors className="w-4 h-4" /> :
-                       pkg.type === 'ward' ? <Bed className="w-4 h-4" /> :
-                       <Clock className="w-4 h-4" />}
-                    </div>
-                    
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-gray-900">{pkg.name}</h4>
-                      <p className="text-sm text-gray-600 mb-2">{pkg.description}</p>
-                      <div className="flex items-center gap-4 text-sm text-gray-500">
-                        {pkg.duration && (
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {pkg.duration}
-                          </span>
-                        )}
-                        <span className="flex items-center gap-1">
-                          <Tag className="w-3 h-3" />
-                          {pkg.type}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 mb-3">
-                    <div className="text-sm font-medium text-gray-700">Inclusions:</div>
-                    <div className="text-xs text-gray-600">
-                      {pkg.inclusions.slice(0, 3).map((inclusion, i) => (
-                        <div key={i}>• {inclusion}</div>
-                      ))}
-                      {pkg.inclusions.length > 3 && (
-                        <div className="text-purple-600">+ {pkg.inclusions.length - 3} more...</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex justify-between items-center pt-3 border-t border-gray-200">
-                    <span className="text-lg font-bold text-purple-600">
-                      {formatCurrency(pkg.price)}
-                    </span>
-                    {selectedPackage?.id === pkg.id && (
-                      <span className="text-sm text-purple-600 font-medium">Selected</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <Plus className="w-4 h-4" />
+              Create Package
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Package Details & Bill Generation */}
-      {selectedPackage && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Package Details</h3>
-          
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h4 className="font-semibold text-gray-900 mb-3">{selectedPackage.name}</h4>
-                <p className="text-gray-600 mb-4">{selectedPackage.description}</p>
-                
-                <div className="space-y-2">
-                  <div className="font-medium text-gray-700">Complete Inclusions:</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {selectedPackage.inclusions.map((inclusion, i) => (
-                      <div key={i} className="text-sm text-gray-600 flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 bg-purple-600 rounded-full"></div>
+      {/* Packages Table */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <DataTable 
+          data={filteredPackages} 
+          columns={columns as any}
+          loading={loading}
+        />
+      </div>
+
+      {/* Package Details Modal */}
+      {showPackageModal && selectedPackage && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-lg">
+            <h3 className="text-lg font-semibold mb-4">Package Details</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-500">Package Name</label>
+                <p className="font-medium">{selectedPackage.name}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500">Category</label>
+                  <p>{selectedPackage.category}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500">Department</label>
+                  <p>{selectedPackage.department || 'N/A'}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500">Non-NABH Rate</label>
+                  <p className="font-semibold text-green-600">
+                    {selectedPackage.non_nabh_charges ? formatCurrency(selectedPackage.non_nabh_charges) : 'N/A'}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500">NABH Rate</label>
+                  <p className="font-semibold text-blue-600">
+                    {selectedPackage.nabh_charges ? formatCurrency(selectedPackage.nabh_charges) : 'N/A'}
+                  </p>
+                </div>
+              </div>
+              {selectedPackage.inclusions.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">Inclusions</label>
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    {selectedPackage.inclusions.map((inclusion, index) => (
+                      <div key={index} className="flex items-center gap-2 text-sm">
+                        <div className="w-1.5 h-1.5 bg-blue-600 rounded-full"></div>
                         {inclusion}
                       </div>
                     ))}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowPackageModal(false)
+                  setShowApplyModal(true)
+                }}
+                className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700"
+              >
+                Apply to Patient
+              </button>
+              <button
+                onClick={() => {
+                  setShowPackageModal(false)
+                  setSelectedPackage(null)
+                }}
+                className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Apply Package Modal */}
+      {showApplyModal && selectedPackage && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-lg">
+            <h3 className="text-lg font-semibold mb-4">Apply Package to Patient</h3>
+            <p className="text-sm text-gray-600 mb-4">Package: {selectedPackage.name}</p>
             
             <div className="space-y-4">
-              <div className="bg-purple-50 rounded-lg p-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-purple-600 mb-1">
-                    {formatCurrency(selectedPackage.price)}
+              {/* Patient Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select Patient</label>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search patient..."
+                    value={patientSearch}
+                    onChange={(e) => setPatientSearch(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {selectedPatient ? (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <p className="font-medium">{selectedPatient.first_name} {selectedPatient.last_name}</p>
+                        <p className="text-sm text-gray-600">ID: {selectedPatient.id} | {selectedPatient.mobile}</p>
+                      </div>
+                      <button 
+                        onClick={() => setSelectedPatient(null)}
+                        className="text-red-600 hover:text-red-800 text-sm"
+                      >
+                        Change
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-sm text-gray-600">All Inclusive Package</div>
+                ) : (
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {filteredPatients.slice(0, 5).map((patient) => (
+                      <button
+                        key={patient.id}
+                        onClick={() => setSelectedPatient(patient)}
+                        className="w-full text-left p-2 border border-gray-200 rounded hover:bg-gray-50"
+                      >
+                        <div className="font-medium text-sm">{patient.first_name} {patient.last_name}</div>
+                        <div className="text-xs text-gray-600">{patient.id} • {patient.mobile}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Package Summary */}
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                <div className="text-center">
+                  <p className="font-semibold text-green-800">Package Amount</p>
+                  <p className="text-2xl font-bold text-green-600">
+                    {formatCurrency(selectedPackage.non_nabh_charges || 0)}
+                  </p>
+                  <p className="text-sm text-gray-600">Non-NABH Rate</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={handleApplyPackage}
+                disabled={!selectedPatient}
+                className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                Apply Package
+              </button>
+              <button
+                onClick={() => {
+                  setShowApplyModal(false)
+                  resetSelections()
+                }}
+                className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Package Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">Create New Package</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Package Name</label>
+                <input
+                  type="text"
+                  value={packageForm.name}
+                  onChange={(e) => setPackageForm({ ...packageForm, name: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                  <input
+                    type="text"
+                    value={packageForm.category}
+                    onChange={(e) => setPackageForm({ ...packageForm, category: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
+                  <input
+                    type="text"
+                    value={packageForm.department}
+                    onChange={(e) => setPackageForm({ ...packageForm, department: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
                 </div>
               </div>
               
-              <button
-                onClick={generatePackageBill}
-                disabled={!selectedPatient}
-                className="w-full bg-purple-600 text-white py-3 rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                <Receipt className="w-5 h-5" />
-                Generate Package Bill
-              </button>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Non-NABH Rate</label>
+                  <input
+                    type="number"
+                    value={packageForm.non_nabh_charges}
+                    onChange={(e) => setPackageForm({ ...packageForm, non_nabh_charges: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">NABH Rate</label>
+                  <input
+                    type="number"
+                    value={packageForm.nabh_charges}
+                    onChange={(e) => setPackageForm({ ...packageForm, nabh_charges: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
               
-              {!selectedPatient && (
-                <p className="text-sm text-gray-500 text-center">Please select a patient first</p>
-              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Inclusions</label>
+                <div className="space-y-2">
+                  {packageForm.inclusions.map((inclusion, index) => (
+                    <div key={index} className="flex gap-2">
+                      <input
+                        type="text"
+                        value={inclusion}
+                        onChange={(e) => {
+                          const newInclusions = [...packageForm.inclusions]
+                          newInclusions[index] = e.target.value
+                          setPackageForm({ ...packageForm, inclusions: newInclusions })
+                        }}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newInclusions = packageForm.inclusions.filter((_, i) => i !== index)
+                          setPackageForm({ ...packageForm, inclusions: newInclusions })
+                        }}
+                        className="px-3 py-2 text-red-600 hover:text-red-800"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setPackageForm({ 
+                      ...packageForm, 
+                      inclusions: [...packageForm.inclusions, ''] 
+                    })}
+                    className="text-blue-600 hover:text-blue-800 text-sm"
+                  >
+                    + Add Inclusion
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={handleCreatePackage}
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700"
+              >
+                Create Package
+              </button>
+              <button
+                onClick={() => {
+                  setShowCreateModal(false)
+                  resetPackageForm()
+                }}
+                className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

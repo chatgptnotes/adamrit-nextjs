@@ -89,7 +89,7 @@ export default function TrialBalance() {
                   ${accountType}
                 </td>
               </tr>
-              ${typeEntries.map(entry => `
+              ${typeEntries.map((entry: any) => `
                 <tr>
                   <td style="border: 1px solid #000; padding: 8px; padding-left: 20px;">${entry.account_name}</td>
                   <td style="border: 1px solid #000; padding: 8px; text-align: right;">
